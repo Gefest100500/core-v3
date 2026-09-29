@@ -1,0 +1,31 @@
+{
+  "colors": {
+    "bg": "#1B1B1B",
+    "sidebar": "#2A2A2A",
+    "card": "#222222",
+    "text": "#E0E0E0",
+    "text_dim": "#A0A0A0",
+    "button": "#D42626",
+    "hover": "#B71C1C",
+    "success": "#4CAF50",
+    "error": "#FF5252",
+    "border": "#333333"
+  },
+  "fonts": {
+    "title": ["Segoe UI", 20, "bold"],
+    "subtitle": ["Segoe UI", 15, "bold"],
+    "label": ["Segoe UI", 13],
+    "small": ["Segoe UI", 11],
+    "status": ["Consolas", 12, "bold"]
+  },
+  "loss_threshold": 1000,
+  "box_deviation_pct": 50,
+  "mirror_deviation_pct": 25,
+  "brak_util": {
+    "tolerance": 1.0
+  },
+  "external": {
+    "asus_url": "https://rao.corp.tander.ru/",
+    "asus_home": "https://rao.corp.tander.ru/"
+  }
+}

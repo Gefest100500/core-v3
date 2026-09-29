@@ -1,0 +1,106 @@
+# =========================================================
+# Python
+# =========================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# =========================================================
+# Virtual environments
+# =========================================================
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# =========================================================
+# IDE / Editor
+# =========================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# =========================================================
+# Testing / Coverage
+# =========================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# =========================================================
+# Core V3.0 — специфичные папки и файлы
+# =========================================================
+# Логи
+Logs/
+*.log
+
+# Результаты работы
+Готовые/
+
+# Временные файлы
+temp/
+
+# Профиль QtWebEngine (cookies, кэш)
+data/webengine/
+
+# Локальные настройки (у каждого свои)
+data/user_settings.json
+data/actions_history.json
+data/active_inventory.json
+data/inventory_archive.json
+data/gm_notes.json
+
+# Локальный config (цвета/шрифты могут отличаться)
+# ВНИМАНИЕ: закомментируй, если хочешь хранить config.json в репозитории
+# config.json
+
+# Временные Excel/JSON, случайно попавшие в корень
+~$*.xlsx
+~$*.xls
+~$*.docx
+*.tmp
+
+# =========================================================
+# Windows
+# =========================================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# =========================================================
+# macOS (на всякий случай)
+# =========================================================
+.DS_Store
+.AppleDouble
+.LSOverride
