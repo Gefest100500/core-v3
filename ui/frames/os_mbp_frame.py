@@ -2,25 +2,11 @@
 """
 Сборка свода ОС и МБП.
 
-- Две карточки: ОС и МБП
-- Выбор файлов через QFileDialog (множественный)
-- Фильтр по ключевым словам в имени файла
-- Тумблер «Убрать лишнее»
-- Сборка свода через OsMbpAnalyzer
-
-Улучшения по сравнению с CTk-версией:
-- QFileDialog.getOpenFileNames вместо filedialog
-- QCheckBox вместо CTkSwitch
-- Показ количества выбранных файлов
-- Тумблер «Убрать лишнее» запоминается через QSettings
-- QProgressBar
-- run_on_ui вместо after(0, ...)
-- Запись в историю с количеством файлов
-- analyzer передаётся в __init__
-
-Правки стиля:
-- Убраны все эмодзи
-- Кнопки — SVG-иконки
+ИЗМЕНЕНИЯ:
+- Убраны локальные стили прогресс-бара и статуса.
+  Теперь они используют глобальный QSS из ui/styles.py.
+- Добавлен setObjectName для прогресс-бара и статуса.
+- В _on_finish убран зелёный цвет (теперь серый).
 """
 import os
 
@@ -86,7 +72,7 @@ class OsMbpFrame(BaseFrame):
         top.addStretch()
         root_layout.addLayout(top)
 
-        # --- Заголовок (без эмодзи) ---
+        # --- Заголовок ---
         title = QLabel("ОС И МБП — СБОРКА СВОДА", self)
         title.setFont(self.FONTS['title'])
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -136,7 +122,6 @@ class OsMbpFrame(BaseFrame):
         card_os = create_card(self)
         cards_row.addWidget(card_os, 1)
 
-        # SVG-иконка коробки
         os_icon_label = QLabel(card_os)
         os_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         os_icon = get_icon_simple(
@@ -168,7 +153,6 @@ class OsMbpFrame(BaseFrame):
         )
         btn_os.setFixedWidth(220)
         btn_os.setMinimumHeight(44)
-        # Иконка
         os_btn_icon = get_icon_simple("os_mbp", color="#FFFFFF", size=16)
         if not os_btn_icon.isNull():
             btn_os.setIcon(os_btn_icon)
@@ -195,7 +179,6 @@ class OsMbpFrame(BaseFrame):
         card_mbp = create_card(self)
         cards_row.addWidget(card_mbp, 1)
 
-        # SVG-иконка коробки
         mbp_icon_label = QLabel(card_mbp)
         mbp_icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         mbp_icon = get_icon_simple(
@@ -252,33 +235,23 @@ class OsMbpFrame(BaseFrame):
         root_layout.addLayout(cards_row)
         root_layout.addStretch()
 
-        # --- Прогресс ---
+        # --- Прогресс (глобальный стиль, серый) ---
         progress_row = QVBoxLayout()
         progress_row.setSpacing(6)
 
         self.progress_bar = QProgressBar(self)
+        self.progress_bar.setObjectName("GlobalProgress")
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(1000)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setFixedHeight(14)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {self.COLORS.get('sidebar', '#2A2A2A')};
-                border-radius: 7px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {self.COLORS.get('success', '#4CAF50')};
-                border-radius: 7px;
-            }}
-        """)
         progress_row.addWidget(self.progress_bar)
 
+        # --- Статус (глобальный стиль, нейтральный) ---
         self.status_label = QLabel("Ожидание файлов", self)
+        self.status_label.setObjectName("StatusNeutral")
         self.status_label.setFont(self.FONTS['status'])
-        self.status_label.setStyleSheet(
-            f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
-        )
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         progress_row.addWidget(self.status_label)
 
@@ -313,7 +286,6 @@ class OsMbpFrame(BaseFrame):
         self.btn_open_osmbp.setMinimumWidth(250)
         self.btn_open_osmbp.setMinimumHeight(45)
         self.btn_open_osmbp.setEnabled(False)
-        # Иконка папки
         folder_icon = get_icon_simple("gm", color=self.COLORS.get('text', '#E0E0E0'), size=16)
         if not folder_icon.isNull():
             self.btn_open_osmbp.setIcon(folder_icon)
@@ -493,7 +465,7 @@ class OsMbpFrame(BaseFrame):
             self.btn_open_osmbp.setEnabled(True)
             self._show_status(
                 "Свод сформирован",
-                self.COLORS.get('success', '#4CAF50')
+                self.COLORS.get('text_dim', '#A0A0A0')  # Серый, не зелёный
             )
             if hasattr(self.app, "finish_progress"):
                 self.app.finish_progress(True, "Свод сформирован")

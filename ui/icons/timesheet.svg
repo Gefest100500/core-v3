@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Рамка календаря -->
+  <rect x="3" y="5" width="18" height="16" rx="2" ry="2"/>
+  <!-- Петли календаря -->
+  <line x1="8" y1="3" x2="8" y2="7"/>
+  <line x1="16" y1="3" x2="16" y2="7"/>
+  <!-- Разделитель -->
+  <line x1="3" y1="10" x2="21" y2="10"/>
+  <!-- Галочка (отметка в табеле) -->
+  <polyline points="8 15 11 18 16 13"/>
+</svg>

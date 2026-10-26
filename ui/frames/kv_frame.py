@@ -7,7 +7,11 @@
 - Запуск анализа квантов
 - Прогресс + результат
 
-Чистые функции парсинга вынесены в utils/parsing.py.
+ИЗМЕНЕНИЯ:
+- Прогресс-бар теперь СЕРЫЙ (в едином стиле), а не зелёный.
+- Добавлен setObjectName("GlobalProgress") для прогресс-бара.
+- Добавлен setObjectName("StatusNeutral") для статуса.
+- Убран локальный color из _show_status.
 """
 import os
 
@@ -51,8 +55,8 @@ class KvFrame(BaseFrame):
         self._settings = QSettings("SilchenkoAleksey", "CoreV3")
 
         self._setup_ui()
-        self._update_button_state()
         self._restore_file_labels()
+        self._update_button_state()
 
     # =========================================================
     # UI
@@ -161,33 +165,22 @@ class KvFrame(BaseFrame):
         root_layout.addWidget(card)
         root_layout.addStretch()
 
-        # --- Прогресс ---
+        # --- Прогресс (серый) ---
         progress_panel = QVBoxLayout()
         progress_panel.setSpacing(6)
 
         self.progress_bar = QProgressBar(self)
+        self.progress_bar.setObjectName("GlobalProgress")
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(1000)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setFixedHeight(14)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {self.COLORS.get('sidebar', '#2A2A2A')};
-                border-radius: 7px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {self.COLORS.get('success', '#4CAF50')};
-                border-radius: 7px;
-            }}
-        """)
         progress_panel.addWidget(self.progress_bar)
 
         self.status_label = QLabel("Ожидание файлов", self)
+        self.status_label.setObjectName("StatusNeutral")
         self.status_label.setFont(self.FONTS['status'])
-        self.status_label.setStyleSheet(
-            f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
-        )
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         progress_panel.addWidget(self.status_label)
 
@@ -230,11 +223,25 @@ class KvFrame(BaseFrame):
             self.lbl_rtp_status.setStyleSheet(
                 f"color: {self.COLORS.get('text', '#E0E0E0')};"
             )
+        else:
+            self.rtp_path = ""
+            self.app.rtp_path = ""
+            self.lbl_rtp_status.setText("Не выбран")
+            self.lbl_rtp_status.setStyleSheet(
+                f"color: {self.COLORS.get('error', '#FF5252')};"
+            )
 
         if self.kv_path and os.path.isfile(self.kv_path):
             self.lbl_kv_status.setText(f"✓ {os.path.basename(self.kv_path)}")
             self.lbl_kv_status.setStyleSheet(
                 f"color: {self.COLORS.get('text', '#E0E0E0')};"
+            )
+        else:
+            self.kv_path = ""
+            self.app.kv_path = ""
+            self.lbl_kv_status.setText("Не выбран")
+            self.lbl_kv_status.setStyleSheet(
+                f"color: {self.COLORS.get('error', '#FF5252')};"
             )
 
     # =========================================================
@@ -261,6 +268,17 @@ class KvFrame(BaseFrame):
         if not path:
             return
 
+        basename_lower = os.path.basename(path).lower()
+        
+        if "ртп" not in basename_lower:
+            self.show_error(
+                "Не тот файл",
+                f"Файл не является выгрузкой РТП:\n{os.path.basename(path)}\n\n"
+                f"Имя файла должно содержать «РТП»\n"
+                f"(например, «РТП.xlsx» или «РТП_Магнит.xlsx»)."
+            )
+            return
+
         self._set_last_dir(path)
         self.rtp_path = path
         self.app.rtp_path = path
@@ -279,6 +297,17 @@ class KvFrame(BaseFrame):
             "Excel files (*.xlsx *.xls)"
         )
         if not path:
+            return
+
+        basename_lower = os.path.basename(path).lower()
+        
+        if "квант" not in basename_lower:
+            self.show_error(
+                "Не тот файл",
+                f"Файл не является выгрузкой Квантов:\n{os.path.basename(path)}\n\n"
+                f"Имя файла должно содержать «Квант»\n"
+                f"(например, «Кванты.xlsx»)."
+            )
             return
 
         self._set_last_dir(path)
@@ -310,10 +339,13 @@ class KvFrame(BaseFrame):
             self.show_error("Файл ТП", f"Файл не найден:\n{self.kv_path}")
             return
 
-        try:
-            self.set_status("Подготовка файла ТП...")
-            self.btn_prepare_tp.setEnabled(False)
+        self.set_status("Подготовка файла ТП...")
+        self.btn_prepare_tp.setEnabled(False)
 
+        self.run_in_thread(self._prepare_tp_collect)
+
+    def _prepare_tp_collect(self):
+        try:
             df = pd.read_excel(self.kv_path)
             log.info(f"Кванты.xlsx столбцы: {list(df.columns)}")
 
@@ -345,13 +377,10 @@ class KvFrame(BaseFrame):
             codes = codes.str.replace(r"\.0$", "", regex=True)
             codes = sorted(set(codes[codes != ""]))
 
+            total = len(df)
+
             if not codes:
-                self.show_warning(
-                    "Файл ТП",
-                    f"После фильтра ≥ {KV_LOSS_MIN:.0f} руб кодов не осталось."
-                )
-                self.set_status("Нет данных", self.COLORS.get('error', '#FF5252'))
-                self.btn_prepare_tp.setEnabled(True)
+                self.run_on_ui(self._on_prepare_tp_no_codes, total)
                 return
 
             out_dir = FOLDERS.get("kv")
@@ -361,58 +390,115 @@ class KvFrame(BaseFrame):
             os.makedirs(out_dir, exist_ok=True)
             out_path = os.path.join(out_dir, KV_EXPORT_FILE)
 
-            if os.path.exists(out_path):
-                ok = ask_confirm(
-                    self,
-                    "Перезаписать файл?",
-                    f"Файл уже существует:\n{out_path}\n\nПерезаписать?"
-                )
-                if not ok:
-                    self.set_status("Отменено", self.COLORS.get('text_dim', '#A0A0A0'))
-                    self.btn_prepare_tp.setEnabled(True)
-                    return
+            self.run_on_ui(
+                self._on_prepare_tp_collected,
+                codes,
+                total,
+                out_path,
+            )
 
+        except (FileNotFoundError, PermissionError) as e:
+            log.error(f"Файловая ошибка при подготовке файла ТП: {e}")
+            err = str(e)
+            self.run_on_ui(self._on_prepare_tp_error, "Файловая ошибка", err)
+
+        except (ValueError, KeyError) as e:
+            log.error(f"Ошибка данных при подготовке файла ТП: {e}")
+            err = str(e)
+            self.run_on_ui(self._on_prepare_tp_error, "Ошибка данных", err)
+
+        except Exception as e:
+            log.exception("Непредвиденная ошибка подготовки файла ТП")
+            err = str(e)
+            self.run_on_ui(self._on_prepare_tp_error, "Ошибка", err)
+
+    def _on_prepare_tp_collected(self, codes, total, out_path):
+        if not os.path.exists(out_path):
+            self.run_in_thread(self._prepare_tp_write, codes, total, out_path)
+            return
+
+        ok = ask_confirm(
+            self,
+            "Перезаписать файл?",
+            f"Файл уже существует:\n{out_path}\n\nПерезаписать?"
+        )
+
+        if not ok:
+            self._on_prepare_tp_cancelled()
+            return
+
+        self.set_status("Запись файла ТП...")
+        self.run_in_thread(self._prepare_tp_write, codes, total, out_path)
+
+    def _prepare_tp_write(self, codes, total, out_path):
+        try:
             with open(out_path, "w", encoding="utf-8") as f:
                 for code in codes:
                     f.write(f"{code}\n")
 
             log.info(f"Файл ТП создан: {out_path} (позиций: {len(codes)})")
 
-            self.set_status(
-                f"Файл ТП создан: {KV_EXPORT_FILE} ({len(codes)} позиций)",
-                self.COLORS.get('success', '#4CAF50')
+            self.run_on_ui(
+                self._on_prepare_tp_success,
+                len(codes),
+                total,
+                out_path,
             )
-            self.show_success(
-                "Файл ТП готов",
-                f"Создан файл:\n{KV_EXPORT_FILE}\n\n"
-                f"Позиций: {len(codes)}\n"
-                f"Из {len(df)} строк исходного файла.\n\n"
-                f"Позиции с потерями ≥ {KV_LOSS_MIN:.0f} руб."
-            )
-
-            try:
-                self.dm.add_action(
-                    "Подготовка файла ТП",
-                    f"Позиций: {len(codes)}",
-                    "📝"
-                )
-            except Exception:
-                pass
 
         except (FileNotFoundError, PermissionError) as e:
-            log.error(f"Файловая ошибка при подготовке файла ТП: {e}")
-            self.show_error("Файловая ошибка", str(e))
-            self.set_status("Файловая ошибка", self.COLORS.get('error', '#FF5252'))
-        except (ValueError, KeyError) as e:
-            log.error(f"Ошибка данных при подготовке файла ТП: {e}")
-            self.show_error("Ошибка данных", str(e))
-            self.set_status("Ошибка данных", self.COLORS.get('error', '#FF5252'))
+            log.error(f"Файловая ошибка при записи файла ТП: {e}")
+            err = str(e)
+            self.run_on_ui(self._on_prepare_tp_error, "Файловая ошибка", err)
+
         except Exception as e:
-            log.exception("Непредвиденная ошибка подготовки файла ТП")
-            self.show_error("Ошибка", str(e))
-            self.set_status("Ошибка подготовки файла ТП", self.COLORS.get('error', '#FF5252'))
-        finally:
-            self.btn_prepare_tp.setEnabled(True)
+            log.exception("Непредвиденная ошибка записи файла ТП")
+            err = str(e)
+            self.run_on_ui(self._on_prepare_tp_error, "Ошибка", err)
+
+    def _on_prepare_tp_success(self, count, total, out_path):
+        self.set_status(
+            f"Файл ТП создан: {KV_EXPORT_FILE} ({count} позиций)",
+            self.COLORS.get('text_dim', '#A0A0A0')
+        )
+        self.btn_prepare_tp.setEnabled(True)
+
+        self.show_success(
+            "Файл ТП готов",
+            f"Создан файл:\n{KV_EXPORT_FILE}\n\n"
+            f"Позиций: {count}\n"
+            f"Из {total} строк исходного файла.\n\n"
+            f"Позиции с потерями ≥ {KV_LOSS_MIN:.0f} руб."
+        )
+
+        try:
+            self.dm.add_action(
+                "Подготовка файла ТП",
+                f"Позиций: {count}",
+                "📝"
+            )
+        except Exception:
+            pass
+
+    def _on_prepare_tp_no_codes(self, total):
+        self.set_status(
+            "Нет данных",
+            self.COLORS.get('error', '#FF5252')
+        )
+        self.btn_prepare_tp.setEnabled(True)
+        self.show_warning(
+            "Файл ТП",
+            f"После фильтра ≥ {KV_LOSS_MIN:.0f} руб кодов не осталось.\n\n"
+            f"Проверено строк: {total}"
+        )
+
+    def _on_prepare_tp_cancelled(self):
+        self.set_status("Отменено", self.COLORS.get('text_dim', '#A0A0A0'))
+        self.btn_prepare_tp.setEnabled(True)
+
+    def _on_prepare_tp_error(self, title, message):
+        self.set_status(title, self.COLORS.get('error', '#FF5252'))
+        self.btn_prepare_tp.setEnabled(True)
+        self.show_error(title, message)
 
     # =========================================================
     # ЗАПУСК АНАЛИЗА
@@ -427,7 +513,7 @@ class KvFrame(BaseFrame):
             return
 
         self.btn_run_kv.setEnabled(False)
-        self._show_status("Идёт анализ...", "#FFD700")
+        self._show_status("Идёт анализ...", self.COLORS.get('text_dim', '#A0A0A0'))
         self._set_progress(0)
 
         self.start_progress("Анализ квантов...")
@@ -441,6 +527,10 @@ class KvFrame(BaseFrame):
                 self.kv_path,
                 progress_callback=self._on_progress
             )
+
+            if result and result.get("success"):
+                self._run_shadow(result)
+
             self.run_on_ui(self._on_finish, result)
 
         except (FileNotFoundError, PermissionError) as e:
@@ -461,6 +551,30 @@ class KvFrame(BaseFrame):
             self.run_on_ui(self.show_error, "Ошибка", err)
             self.run_on_ui(self._reset_state, "Ошибка")
 
+    def _run_shadow(self, result):
+        try:
+            from ml.shadow import run_shadow
+
+            shadow_rows = result.get("shadow_rows") or []
+            if not shadow_rows:
+                log.info("Shadow: нет строк для анализа")
+                return
+
+            active = self.app.get_active_inventory()
+
+            res = run_shadow(
+                rows=shadow_rows,
+                active_inventory=active,
+                clear_before=True,
+            )
+            log.info(
+                f"Shadow: всего {res['total']}, "
+                f"объяснений {res['explanations']}, "
+                f"в БД {res['db_written']}"
+            )
+        except Exception as e:
+            log.exception(f"Shadow: ошибка прогона — {e}")
+
     def _on_progress(self, value, message=None):
         try:
             int_value = int(float(value) * 1000)
@@ -469,7 +583,7 @@ class KvFrame(BaseFrame):
 
         self.run_on_ui(self._set_progress, int_value)
         if message:
-            self.run_on_ui(self._show_status, message, "#FFD700")
+            self.run_on_ui(self._show_status, message, self.COLORS.get('text_dim', '#A0A0A0'))
         self.run_on_ui(self.update_progress, value)
 
     def _reset_state(self, status_text):
@@ -483,7 +597,7 @@ class KvFrame(BaseFrame):
         if res and res.get("success"):
             self._show_status(
                 "Анализ завершён",
-                self.COLORS.get('success', '#4CAF50')
+                self.COLORS.get('text_dim', '#A0A0A0')  # Серый
             )
             self.btn_open_kv.setEnabled(True)
             self.finish_progress(True, "Анализ завершён")

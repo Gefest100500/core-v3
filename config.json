@@ -26,6 +26,10 @@
   },
   "external": {
     "asus_url": "https://rao.corp.tander.ru/",
-    "asus_home": "https://rao.corp.tander.ru/"
+    "asus_home": "https://rao.corp.tander.ru/",
+    "trip_url": "https://magnittravel.ru/Start",
+    "trip_home": "https://magnittravel.ru/Start",
+    "help_url": "https://help.corp.tander.ru/dwp/app/#/catalog",
+    "help_home": "https://help.corp.tander.ru/dwp/app/#/catalog"
   }
 }

@@ -3,24 +3,15 @@
 Тесты для core/brak_util_analyzer.py.
 
 Проверяем чистые функции через прямой вызов.
+
+ИЗМЕНЕНИЯ:
+- _safe_filename переехал в utils/excel_utils.py → тесты переехали
+  в test_excel_utils.py.
+- Здесь остаются только тесты на _fill_columns.
 """
 import pytest
 
 from core.brak_util_analyzer import BrakUtilAnalyzer
-
-
-class TestSafeFilename:
-    def test_simple(self):
-        assert BrakUtilAnalyzer._safe_filename("Волжск 1") == "Волжск 1"
-
-    def test_bad_chars(self):
-        result = BrakUtilAnalyzer._safe_filename('ГМ/Волжск:1*')
-        assert "/" not in result
-        assert ":" not in result
-        assert "*" not in result
-
-    def test_empty(self):
-        assert BrakUtilAnalyzer._safe_filename("") == "без_названия"
 
 
 class TestFillColumns:

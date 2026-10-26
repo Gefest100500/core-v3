@@ -2,24 +2,11 @@
 """
 Анализ паллет.
 
-- Выбор папки с файлами 1.xlsx, 2.xlsx, ...
-- Подсчёт файлов подходящего формата
-- Сборка отчёта через PalAnalyzer
-- Показ суммы расхождений
-
-Улучшения по сравнению с CTk-версией:
-- QFileDialog.getExistingDirectory
-- QProgressBar 0..1000
-- QLabel вместо readonly CTkEntry для суммы
-- run_on_ui вместо after(0, ...)
-- Запоминается последняя папка (QSettings)
-- Показ пути к выбранной папке
-- Запись в историю с суммой расхождений
-- analyzer передаётся в __init__
-
-Правки стиля:
-- Убраны все эмодзи
-- Кнопки — SVG-иконки
+ИЗМЕНЕНИЯ:
+- Убраны локальные стили прогресс-бара, статуса и lbl_sum.
+  Теперь они используют глобальный QSS из ui/styles.py.
+- Добавлен setObjectName для прогресс-бара и статуса.
+- Убран зелёный цвет из _on_finish и _update_folder_status.
 """
 import os
 
@@ -76,7 +63,7 @@ class PalFrame(BaseFrame):
         top.addStretch()
         root_layout.addLayout(top)
 
-        # --- Заголовок (без эмодзи) ---
+        # --- Заголовок ---
         title = QLabel("АНАЛИЗ ПАЛЛЕТ", self)
         title.setFont(self.FONTS['title'])
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -85,7 +72,6 @@ class PalFrame(BaseFrame):
         # --- Карточка с выбором папки ---
         card = create_card(self)
 
-        # 🆕 SVG-иконка папки
         icon_label = QLabel(card)
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         folder_icon = get_icon_simple(
@@ -117,7 +103,6 @@ class PalFrame(BaseFrame):
         )
         btn_folder.setFixedWidth(250)
         btn_folder.setMinimumHeight(40)
-        # 🆕 Иконка папки
         btn_folder_icon = get_icon_simple("gm", color="#FFFFFF", size=16)
         if not btn_folder_icon.isNull():
             btn_folder.setIcon(btn_folder_icon)
@@ -150,8 +135,9 @@ class PalFrame(BaseFrame):
         root_layout.addWidget(card)
         root_layout.addStretch()
 
-        # --- Сумма расхождений (без эмодзи 💰) ---
+        # --- Сумма расхождений (без зелёного) ---
         self.lbl_sum = QLabel("Сумма расхождений: —", self)
+        self.lbl_sum.setObjectName("StatusNeutral")
         self.lbl_sum.setFont(self.FONTS['subtitle'])
         self.lbl_sum.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_sum.setStyleSheet(f"""
@@ -166,33 +152,23 @@ class PalFrame(BaseFrame):
         """)
         root_layout.addWidget(self.lbl_sum)
 
-        # --- Прогресс ---
+        # --- Прогресс (глобальный стиль, серый) ---
         progress_row = QVBoxLayout()
         progress_row.setSpacing(6)
 
         self.progress_bar = QProgressBar(self)
+        self.progress_bar.setObjectName("GlobalProgress")
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(1000)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setFixedHeight(14)
-        self.progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {self.COLORS.get('sidebar', '#2A2A2A')};
-                border-radius: 7px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {self.COLORS.get('success', '#4CAF50')};
-                border-radius: 7px;
-            }}
-        """)
         progress_row.addWidget(self.progress_bar)
 
+        # --- Статус (глобальный стиль, нейтральный) ---
         self.status_label = QLabel("Ожидание...", self)
+        self.status_label.setObjectName("StatusNeutral")
         self.status_label.setFont(self.FONTS['status'])
-        self.status_label.setStyleSheet(
-            f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
-        )
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         progress_row.addWidget(self.status_label)
 
@@ -267,7 +243,7 @@ class PalFrame(BaseFrame):
         if not check_files:
             self.lbl_folder_status.setText("Папка выбрана")
             self.lbl_folder_status.setStyleSheet(
-                f"color: {self.COLORS.get('success', '#4CAF50')};"
+                f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
             )
             self.btn_run_pal.setEnabled(True)
             return
@@ -298,7 +274,7 @@ class PalFrame(BaseFrame):
         if count > 0:
             self.lbl_folder_status.setText(f"Найдено файлов: {count}")
             self.lbl_folder_status.setStyleSheet(
-                f"color: {self.COLORS.get('success', '#4CAF50')};"
+                f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
             )
             self.btn_run_pal.setEnabled(True)
         else:
@@ -318,7 +294,7 @@ class PalFrame(BaseFrame):
 
         self.btn_run_pal.setEnabled(False)
         self._set_progress(0)
-        self._show_status("Сборка...", "#FFD700")
+        self._show_status("Сборка...", self.COLORS.get('text_dim', '#A0A0A0'))
 
         if hasattr(self.app, "start_progress"):
             self.app.start_progress("Сборка паллет...")
@@ -362,15 +338,15 @@ class PalFrame(BaseFrame):
 
             self._show_status(
                 "Готово!",
-                self.COLORS.get('success', '#4CAF50')
+                self.COLORS.get('text_dim', '#A0A0A0')  # Серый, не зелёный
             )
 
             self.lbl_sum.setText(f"Сумма расхождений: {total:.2f} руб.")
             self.lbl_sum.setStyleSheet(f"""
                 QLabel {{
-                    color: {self.COLORS.get('success', '#4CAF50')};
+                    color: {self.COLORS.get('text', '#E0E0E0')};
                     background-color: {self.COLORS.get('sidebar', '#2A2A2A')};
-                    border: 1px solid {self.COLORS.get('success', '#4CAF50')};
+                    border: 1px solid {self.COLORS.get('border', '#333333')};
                     border-radius: 10px;
                     padding: 15px 30px;
                     font-size: 18px;

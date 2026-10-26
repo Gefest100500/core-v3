@@ -10,20 +10,24 @@
 - Сдвигает данные на 3 строки ниже шапки (подшапка + нумерация + 1)
 - Фильтрует мусор: шапку, нумерацию, итоговые строки
 - Группирует по наименованию, суммирует количество
+
+ИЗМЕНЕНИЯ:
+- BASE_DIR берётся из utils.file_utils — единая точка правды.
+- autofit_columns вынесен в utils/excel_utils.py
 """
 import os
 import json
 import re
 
 import pandas as pd
-from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from utils.logger import log
-from utils.file_utils import clear_folder
+from utils.file_utils import clear_folder, get_base_dir
+from utils.excel_utils import autofit_columns
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = get_base_dir()
 
 UNWANTED_PATH = os.path.join(BASE_DIR, "data", "unwanted.json")
 
@@ -87,13 +91,13 @@ class OsMbpAnalyzer:
         df_os = self._build_svod(os_files, "ОС", remove_unwanted_flag)
         os_path = os.path.join(out_dir, "ОС.xlsx")
         df_os.to_excel(os_path, index=False)
-        self._autofit_columns(os_path)
+        autofit_columns(os_path)
         log.info(f"ОС сохранён: {os_path} ({len(df_os)} строк)")
 
         df_mbp = self._build_svod(mbp_files, "МБП", remove_unwanted_flag)
         mbp_path = os.path.join(out_dir, "МБП.xlsx")
         df_mbp.to_excel(mbp_path, index=False)
-        self._autofit_columns(mbp_path)
+        autofit_columns(mbp_path)
         log.info(f"МБП сохранён: {mbp_path} ({len(df_mbp)} строк)")
 
         return {
@@ -393,48 +397,3 @@ class OsMbpAnalyzer:
 
         mask = ~df["Наименование"].apply(is_unwanted)
         return df[mask].reset_index(drop=True)
-
-    # =========================================================
-    # АВТОПОДБОР ШИРИНЫ КОЛОНОК
-    # =========================================================
-    @staticmethod
-    def _autofit_columns(file_path, min_width=8, max_width=60):
-        try:
-            wb = load_workbook(file_path)
-        except Exception as e:
-            log.warning(f"Не удалось открыть файл для автоподбора ширины: {e}")
-            return
-
-        ws = wb.active
-
-        for col_cells in ws.iter_cols():
-            col_letter = None
-            max_len = 0
-
-            for cell in col_cells:
-                if col_letter is None:
-                    col_letter = get_column_letter(cell.column)
-
-                val = cell.value
-                if val is None:
-                    continue
-
-                text = str(val)
-                lines = text.split("\n")
-                line_len = max(len(line) for line in lines) if lines else 0
-
-                if line_len > max_len:
-                    max_len = line_len
-
-            if col_letter is None:
-                continue
-
-            width = max(min_width, min(max_len + 2, max_width))
-            ws.column_dimensions[col_letter].width = width
-
-        try:
-            wb.save(file_path)
-        except PermissionError:
-            log.warning(
-                f"Файл {file_path} занят — не удалось сохранить ширину колонок."
-            )

@@ -2,24 +2,9 @@
 """
 Управление принтерами.
 
-- Вкладка «Установленные»: список + фильтр + переименование
-- Вкладка «Установить по IP»: нормализация + пинг + установка
-
-Улучшения по сравнению с CTk-версией:
-- QTabWidget вместо CTkTabview
-- QListWidget вместо ручного скролла со строками
-- QInputDialog.getText вместо CTkInputDialog
-- run_on_ui вместо after(0, ...)
-- Убран <<Paste>> — Qt принимает Ctrl+V из коробки
-- Двойной клик — переименовать
-- Контекстное меню — переименовать / по умолчанию
-- Enter в поле IP — сразу установить
-- Запоминание последнего IP (QSettings)
-
-Правки стиля (v3):
-- Сканирование синхронно, CoInitialize в потоках
-- Мягкая подсветка выбранной строки
-- Убраны все эмодзи, кнопки — SVG-иконки
+ИЗМЕНЕНИЯ:
+- Добавлена кнопка «Назад» (возврат в меню «Утилиты»).
+- Плейсхолдеры приведены к единому виду (с большой буквы).
 """
 import os
 
@@ -33,7 +18,8 @@ from PyQt6.QtWidgets import (
 
 from ui.frames.base_frame import BaseFrame
 from ui.components.widgets import (
-    create_card, StyledEntry, PrimaryButton, SecondaryButton, style_tabview
+    create_card, StyledEntry, PrimaryButton, SecondaryButton, style_tabview,
+    AnimatedPlaceholderEntry
 )
 from ui.components.dialogs import ask_confirm
 from ui.icons import get_icon_simple
@@ -42,21 +28,21 @@ from utils.network_utils import normalize_ip, is_valid_ip
 
 
 def _com_initialize():
-    """Инициализирует COM в текущем потоке."""
     try:
         import pythoncom
-        pythoncom.CoInitialize()
-        return True
     except ImportError:
         log.debug("pythoncom недоступен — работаем без CoInitialize")
         return False
+
+    try:
+        hr = pythoncom.CoInitialize()
+        return (hr == 0)
     except Exception as e:
         log.debug(f"CoInitialize failed: {e}")
         return False
 
 
 def _com_uninitialize(initialized):
-    """Освобождает COM в текущем потоке."""
     if not initialized:
         return
     try:
@@ -77,7 +63,6 @@ class PrintersFrame(BaseFrame):
         self.last_installed_name = None
         self.all_installed = []
 
-        # Менеджер создаём в главном потоке — COM уже инициализирован QApplication
         self.manager = None
         try:
             from core.printer_manager import PrinterManager
@@ -92,7 +77,6 @@ class PrintersFrame(BaseFrame):
         self._setup_ui()
         self._restore_last_ip()
 
-        # Первое сканирование сразу при открытии вкладки
         self._do_scan()
 
     # =========================================================
@@ -103,13 +87,24 @@ class PrintersFrame(BaseFrame):
         root_layout.setContentsMargins(20, 20, 20, 20)
         root_layout.setSpacing(10)
 
-        # --- Заголовок (без эмодзи) ---
+        # --- Кнопка "Назад" ---
+        back_row = QHBoxLayout()
+        back_btn = SecondaryButton(
+            "← Назад",
+            on_click=self._go_back,
+            parent=self
+        )
+        back_btn.setMinimumWidth(120)
+        back_btn.setMinimumHeight(36)
+        back_row.addWidget(back_btn)
+        back_row.addStretch()
+        root_layout.addLayout(back_row)
+
         title = QLabel("УПРАВЛЕНИЕ ПРИНТЕРАМИ", self)
         title.setFont(self.FONTS['title'])
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root_layout.addWidget(title)
 
-        # --- Верхняя панель: поиск + обновить ---
         top_panel = QHBoxLayout()
         top_panel.setSpacing(10)
 
@@ -120,15 +115,14 @@ class PrintersFrame(BaseFrame):
         )
         top_panel.addWidget(search_lbl)
 
-        self.entry_search = StyledEntry(
-            placeholder="имя принтера или порт",
+        self.entry_search = AnimatedPlaceholderEntry(
+            placeholder="Имя принтера или порт",
             parent=self
         )
         self.entry_search.setMinimumWidth(300)
         self.entry_search.textChanged.connect(self._apply_filter)
         top_panel.addWidget(self.entry_search, 1)
 
-        # 🆕 Кнопка "Обновить" с SVG-иконкой
         btn_refresh = PrimaryButton(
             "Обновить список",
             on_click=self._do_scan,
@@ -144,7 +138,6 @@ class PrintersFrame(BaseFrame):
 
         root_layout.addLayout(top_panel)
 
-        # --- Вкладки ---
         self.tabs = QTabWidget(self)
         style_tabview(
             self.tabs,
@@ -159,6 +152,13 @@ class PrintersFrame(BaseFrame):
 
         self._build_installed_tab()
         self._build_ip_tab()
+
+    def _go_back(self):
+        """Возврат в меню «Утилиты»."""
+        try:
+            self.app.show_tab("utils")
+        except Exception as e:
+            log.warning(f"Не удалось вернуться в утилиты: {e}")
 
     def _build_installed_tab(self):
         tab = QWidget()
@@ -209,7 +209,6 @@ class PrintersFrame(BaseFrame):
         btn_row.setSpacing(10)
         btn_row.addStretch()
 
-        # 🆕 Переименовать — с SVG-иконкой
         btn_rename = SecondaryButton(
             "Переименовать",
             on_click=self.rename_printer,
@@ -223,7 +222,6 @@ class PrintersFrame(BaseFrame):
             btn_rename.setIconSize(QSize(16, 16))
         btn_row.addWidget(btn_rename)
 
-        # 🆕 По умолчанию — с SVG-иконкой
         btn_set_default = SecondaryButton(
             "Сделать по умолчанию",
             on_click=self._set_as_default,
@@ -272,8 +270,8 @@ class PrintersFrame(BaseFrame):
         ip_lbl.setFixedWidth(120)
         input_row.addWidget(ip_lbl)
 
-        self.entry_ip = StyledEntry(
-            placeholder="10.3.2.94",
+        self.entry_ip = AnimatedPlaceholderEntry(
+            placeholder="Введите IP-адрес (например, 10.3.2.94)",
             parent=card
         )
         self.entry_ip.setMinimumWidth(400)
@@ -287,7 +285,6 @@ class PrintersFrame(BaseFrame):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
 
-        # 🆕 Установить — с SVG-иконкой
         btn_install = PrimaryButton(
             "Установить принтер",
             on_click=self.add_printer_by_ip,

@@ -2,12 +2,10 @@
 """
 Стандартные комментарии.
 
-- Загрузка шаблонов из data/standard_comments.json
-- Автокомплит ГМ через QCompleter
-- Логика подстановки вынесена в core/comments_builder.py
-
-Чистые функции парсинга/форматирования — в utils/parsing.py,
-utils/formatting.py.
+ИЗМЕНЕНИЯ:
+- Подсказка (hint_label) теперь всегда нейтральная (серая),
+  без красного акцента.
+- Добавлен setObjectName("StatusNeutral") для подсказки.
 """
 import os
 import json
@@ -18,24 +16,21 @@ from PyQt6.QtWidgets import (
     QScrollArea, QCompleter, QApplication
 )
 
+from utils.file_utils import get_base_dir
 from ui.frames.base_frame import BaseFrame
 from ui.components.widgets import (
-    create_card, StyledEntry, PrimaryButton, SecondaryButton
+    create_card, StyledEntry, PrimaryButton, SecondaryButton,
+    style_popup, AnimatedPlaceholderEntry,
 )
 from ui.icons import get_icon_simple
 from utils.logger import log
 from core.comments_builder import build_comment_text
 
 
-COMMENTS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "standard_comments.json"
-)
+BASE_DIR = get_base_dir()
 
-GM_DATA_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "gm_data.json"
-)
+COMMENTS_PATH = os.path.join(BASE_DIR, "data", "standard_comments.json")
+GM_DATA_PATH = os.path.join(BASE_DIR, "data", "gm_data.json")
 
 EMOJI_TO_ICON = {
     "🏭": "production",
@@ -135,8 +130,8 @@ class CommentsFrame(BaseFrame):
 
         hint_text, hint_color = self._get_hint_text_and_color()
         self.hint_label = QLabel(hint_text, self)
+        self.hint_label.setObjectName("StatusNeutral")
         self.hint_label.setFont(self.FONTS['small'])
-        self.hint_label.setStyleSheet(f"color: {hint_color};")
         self.hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root_layout.addWidget(self.hint_label)
 
@@ -154,10 +149,11 @@ class CommentsFrame(BaseFrame):
         root_layout.addWidget(self.scroll, 1)
 
     def _get_hint_text_and_color(self):
+        # Всегда нейтральный цвет (серый)
         if self.current_gm_name:
             return (
                 f"Активная инвентаризация: {self.current_gm_name}",
-                self.COLORS.get("button", "#D42626")
+                self.COLORS.get("text_dim", "#A0A0A0")
             )
         return (
             "Заполните поля и нажмите «Скопировать» — текст попадёт в буфер обмена",
@@ -293,10 +289,17 @@ class CommentsFrame(BaseFrame):
             lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             row.addWidget(lbl)
 
-            entry = StyledEntry(
-                placeholder="Начните вводить название ГМ" if vtype == "gm_autocomplete" else "",
-                parent=card
-            )
+            if vtype == "gm_autocomplete":
+                entry = AnimatedPlaceholderEntry(
+                    placeholder="Начните вводить название ГМ",
+                    parent=card
+                )
+            else:
+                entry = StyledEntry(
+                    placeholder="",
+                    parent=card
+                )
+
             entry.setText(value)
             entry.setMinimumWidth(400)
 
@@ -382,6 +385,8 @@ class CommentsFrame(BaseFrame):
         completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         completer.setMaxVisibleItems(10)
 
+        style_popup(completer)
+
         entry.setCompleter(completer)
 
         def _on_activated(text):
@@ -392,6 +397,18 @@ class CommentsFrame(BaseFrame):
             entry.setText(name_only)
 
         completer.activated.connect(_on_activated)
+
+        def _on_text_edited_for_completer(text):
+            if not text:
+                completer.popup().hide()
+                return
+            completer.setCompletionPrefix(text)
+            if completer.completionCount() > 0:
+                completer.complete()
+            else:
+                completer.popup().hide()
+
+        entry.textEdited.connect(_on_text_edited_for_completer)
 
     # =========================================================
     # ПРЕДПРОСМОТР

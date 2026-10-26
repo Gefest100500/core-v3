@@ -87,11 +87,17 @@ def norm_number(value):
 
     ' 12345.0 ' -> '12345'
     None -> ''
+    NaN -> ''
     """
     if value is None:
         return ""
 
     s = str(value).strip()
+
+    # NaN (pandas) превращается в "nan" — считаем его пустым
+    if s.lower() in ("nan", "none", ""):
+        return ""
+
     if s.endswith(".0"):
         s = s[:-2]
     return s

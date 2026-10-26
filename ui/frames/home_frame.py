@@ -2,15 +2,9 @@
 """
 Главная вкладка.
 
-- Приветствие по времени суток
-- Живые часы (обновляются каждую секунду)
-- Активная инвентаризация с прогрессом
-- Последние действия (история) — с SVG-иконками
-
 ИЗМЕНЕНИЯ:
-- gm_data берётся через self.app.get_gm_data() — без try/except
-- активная инвентаризация — через self.app.get_active_inventory()
-- при отсутствии данных не падаем, а показываем пусто
+- Прогресс-бар теперь СЕРЫЙ (в едином стиле), а не зелёный/красный.
+- Добавлен setObjectName для прогресс-бара.
 """
 import os
 from datetime import datetime, date
@@ -112,6 +106,24 @@ class HomeFrame(BaseFrame):
                 month = MONTHS_RU_GENITIVE[now.month]
                 date_text = f"{weekday}, {now.day} {month} {now.year}"
                 self.clock_date_label.setText(date_text)
+        except Exception:
+            pass
+
+    # =========================================================
+    # ПОКАЗ / СКРЫТИЕ
+    # =========================================================
+    def showEvent(self, event):
+        super().showEvent(event)
+        try:
+            self._clock_timer.start(1000)
+            self._tick_clock()
+        except Exception:
+            pass
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        try:
+            self._clock_timer.stop()
         except Exception:
             pass
 
@@ -376,27 +388,12 @@ class HomeFrame(BaseFrame):
         )
 
         progress_bar = QProgressBar(self.inventory_card)
+        progress_bar.setObjectName("GlobalProgress")
         progress_bar.setMinimum(0)
         progress_bar.setMaximum(100)
         progress_bar.setValue(int(progress_value * 100))
         progress_bar.setFixedHeight(12)
         progress_bar.setTextVisible(False)
-
-        progress_color = (
-            self.COLORS.get('success', '#4CAF50')
-            if progress_value >= 1.0
-            else self.COLORS.get('button', '#D42626')
-        )
-        progress_bar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {self.COLORS.get('bg', '#1B1B1B')};
-                border-radius: 6px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {progress_color};
-                border-radius: 6px;
-            }}
-        """)
         self.inventory_container.addWidget(progress_bar)
 
         percent_label = QLabel(
@@ -436,8 +433,6 @@ class HomeFrame(BaseFrame):
         self._history_loading = True
 
         def _on_history_loaded(data):
-            # ⚠️ Вызывается из ФОНОВОГО потока (read_json_async).
-            # Все UI-действия — только через run_on_ui.
             self._history_loading = False
             if not data:
                 data = []

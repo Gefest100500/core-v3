@@ -1,50 +1,52 @@
 # ui/frames/inventory_frame.py
-"""
+r"""
 Инвентаризация.
 
-- Запуск новой инвентаризации (ГМ + вариант + дата начала)
-- Автокомплит ГМ через QCompleter
-- QDateEdit с нативным calendarPopup — календарь выпадает под полем
-- Спиннеры и стрелка отключены через QSS, drop-down растянут на всё поле
-  (клик в любом месте открывает календарь)
-- Сегодняшняя дата в календаре заливается красным (setDateTextFormat)
-- Автоматический расчёт даты окончания
-- Чек-лист по текущему дню с прогрессом
-- Смена ГМ / Завершение с архивацией
-- План на все дни (просмотр)
+ИЗМЕНЕНИЯ:
+- Прогресс-бары (по дням и по чек-листу) теперь СЕРЫЕ (в едином стиле).
+- Убран зелёный цвет из процента чек-листа.
 """
-import os
-from datetime import datetime, date, timedelta
+import re
+from datetime import date, datetime
 
 from PyQt6.QtCore import Qt, QStringListModel, QTimer, QDate
 from PyQt6.QtGui import QTextCharFormat, QColor, QBrush
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QScrollArea, QComboBox, QCheckBox, QCompleter, QLineEdit,
+    QScrollArea, QCheckBox, QCompleter, QLineEdit,
     QProgressBar, QDateEdit, QInputDialog, QDialog
 )
 
 from ui.frames.base_frame import BaseFrame
 from ui.components.widgets import (
-    create_card, StyledEntry, StyledCombo, PrimaryButton, SecondaryButton
+    create_card, StyledCombo, PrimaryButton, SecondaryButton,
+    style_popup, AnimatedPlaceholderEntry,
 )
 from ui.components.dialogs import ask_confirm, show_info, show_error
 from utils.logger import log
-
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.data_manager import (
     GM_DATA_PATH,
     INVENTORY_PLANS_PATH,
     INVENTORY_PATH,
-    INVENTORY_ARCHIVE_PATH,
+)
+
+from core.inventory_helper import (
+    find_gm_by_code,
+    get_variant_values,
+    get_variant_key_from_title,
+    build_empty_checklist,
+    calculate_end_date,
+    calculate_days_passed,
+    calculate_progress,
+    format_date_ru,
+    get_day_data,
 )
 
 
 class InventoryFrame(BaseFrame):
 
-    TITLE = "📋 Инвентаризация"
+    TITLE = "Инвентаризация"
 
     def __init__(self, parent, name=None):
         super().__init__(parent, name)
@@ -52,7 +54,6 @@ class InventoryFrame(BaseFrame):
         self.gm_data = []
         self.plans = {}
         self.active_inventory = None
-        self.inventory_archive = []
 
         self._last_inventory_signature = None
         self._loading = False
@@ -63,6 +64,9 @@ class InventoryFrame(BaseFrame):
         self._save_timer.setInterval(300)
         self._save_timer.timeout.connect(self._do_save_inventory)
 
+        # Ссылки на чекбоксы: (day_key, shift_key, idx) → QCheckBox
+        self._checkboxes = {}
+
         self._load_all_from_cache()
         self._setup_ui()
         self._refresh_async()
@@ -72,24 +76,20 @@ class InventoryFrame(BaseFrame):
         return self.app.data_manager
 
     # =========================================================
-    # ЗАГРУЗКА — из кэша
+    # ЗАГРУЗКА
     # =========================================================
     def _load_all_from_cache(self):
         self.gm_data = self.dm.get_gm_data()
         self.plans = self.dm.get_inventory_plans()
         self.active_inventory = self.dm.get_active_inventory()
-        self.inventory_archive = self.dm.get_inventory_archive() or []
         self._last_inventory_signature = self.dm.signature(self.active_inventory)
 
-    # =========================================================
-    # ЗАГРУЗКА — async
-    # =========================================================
     def _refresh_async(self):
         if self._loading:
             return
         self._loading = True
 
-        results = {"done": 0, "total": 4, "data": {}}
+        results = {"done": 0, "total": 3, "data": {}}
 
         def _check_done():
             if results["done"] < results["total"]:
@@ -109,13 +109,11 @@ class InventoryFrame(BaseFrame):
                 self.dm.read_json_async("gm_data", GM_DATA_PATH, _make_cb("gm_data"))
                 self.dm.read_json_async("inventory_plans", INVENTORY_PLANS_PATH, _make_cb("plans"))
                 self.dm.read_json_async("active_inventory", INVENTORY_PATH, _make_cb("active"))
-                self.dm.read_json_async("inventory_archive", INVENTORY_ARCHIVE_PATH, _make_cb("archive"))
             else:
                 results["data"]["gm_data"] = self.dm.get_gm_data()
                 results["data"]["plans"] = self.dm.get_inventory_plans()
                 results["data"]["active"] = self.dm.get_active_inventory()
-                results["data"]["archive"] = self.dm.get_inventory_archive()
-                results["done"] = 4
+                results["done"] = 3
                 _check_done()
         except Exception as e:
             log.debug(f"async load inventory failed: {e}")
@@ -128,7 +126,6 @@ class InventoryFrame(BaseFrame):
         new_gm = data.get("gm_data", self.gm_data)
         new_plans = data.get("plans", self.plans)
         new_active = data.get("active", self.active_inventory)
-        new_archive = data.get("archive", self.inventory_archive)
 
         new_sig = self.dm.signature(new_active)
 
@@ -139,9 +136,6 @@ class InventoryFrame(BaseFrame):
         if new_plans != self.plans:
             self.plans = new_plans or {}
             changed = True
-        if new_archive != self.inventory_archive:
-            self.inventory_archive = new_archive or []
-            changed = True
         if new_sig != self._last_inventory_signature:
             self.active_inventory = new_active
             self._last_inventory_signature = new_sig
@@ -149,7 +143,7 @@ class InventoryFrame(BaseFrame):
 
         if changed:
             self._render_inventory()
-            self._render_checklist()
+            self._rebuild_checklist_view()
 
     # =========================================================
     # UI
@@ -194,10 +188,10 @@ class InventoryFrame(BaseFrame):
         self.scroll_layout.addStretch()
 
         self._render_inventory()
-        self._render_checklist()
+        self._rebuild_checklist_view()
 
     # =========================================================
-    # АКТИВНАЯ — РЕНДЕР
+    # УТИЛИТЫ UI
     # =========================================================
     def _clear_layout(self, layout):
         while layout.count():
@@ -209,6 +203,9 @@ class InventoryFrame(BaseFrame):
             if child is not None:
                 self._clear_layout(child)
 
+    # =========================================================
+    # АКТИВНАЯ — РЕНДЕР
+    # =========================================================
     def _render_inventory(self):
         self._clear_layout(self.inventory_container)
 
@@ -241,7 +238,7 @@ class InventoryFrame(BaseFrame):
         lbl_gm.setFixedWidth(180)
         row_gm.addWidget(lbl_gm)
 
-        self.gm_input = StyledEntry(
+        self.gm_input = AnimatedPlaceholderEntry(
             placeholder="Введите код или название ГМ",
             parent=card
         )
@@ -267,7 +264,7 @@ class InventoryFrame(BaseFrame):
         row_var.addWidget(lbl_var)
 
         self.combo_variant = StyledCombo(
-            items=self._get_variant_values(),
+            items=get_variant_values(self.plans),
             parent=card
         )
         self.combo_variant.setMinimumWidth(400)
@@ -285,9 +282,6 @@ class InventoryFrame(BaseFrame):
         lbl_start.setFixedWidth(180)
         row_start.addWidget(lbl_start)
 
-        # Стандартный QDateEdit с нативным выпадающим календарём.
-        # Клик по любому месту поля открывает календарь, потому что
-        # drop-down растянут на всё поле через QSS (см. styles.py).
         self.date_start = QDateEdit(card)
         self.date_start.setCalendarPopup(True)
         self.date_start.setDate(QDate.currentDate())
@@ -296,13 +290,13 @@ class InventoryFrame(BaseFrame):
         self.date_start.setFixedWidth(200)
         self.date_start.setCursor(Qt.CursorShape.PointingHandCursor)
         self.date_start.dateChanged.connect(self._update_end_date)
+
+        style_popup(self.date_start)
+
         row_start.addWidget(self.date_start)
-
         row_start.addStretch()
-
         self.inventory_container.addLayout(row_start)
 
-        # 🆕 Красим СЕГОДНЯШНЮЮ дату в календаре — красным фоном
         self._apply_today_highlight(self.date_start)
 
         # --- Дата окончания ---
@@ -349,12 +343,6 @@ class InventoryFrame(BaseFrame):
     # =========================================================
     @staticmethod
     def _apply_today_highlight(date_edit):
-        """Красит сегодняшнюю дату в календаре QDateEdit красным фоном.
-
-        QSS не умеет стилизовать отдельно «текущую» дату — только
-        «выбранную» через ::selected. Поэтому применяем
-        QCalendarWidget.setDateTextFormat() для сегодняшнего дня.
-        """
         cal = date_edit.calendarWidget()
         if cal is None:
             return
@@ -362,56 +350,42 @@ class InventoryFrame(BaseFrame):
         today = QDate.currentDate()
 
         fmt = QTextCharFormat()
-        fmt.setBackground(QBrush(QColor("#D42626")))   # красный
-        fmt.setForeground(QBrush(QColor("#FFFFFF")))   # белый текст
-        fmt.setFontWeight(75)                           # чуть жирнее
+        fmt.setBackground(QBrush(QColor("#D42626")))
+        fmt.setForeground(QBrush(QColor("#FFFFFF")))
+        fmt.setFontWeight(75)
 
         cal.setDateTextFormat(today, fmt)
 
     # =========================================================
-    # ВАЛИДАЦИЯ
+    # АВТОКОМПЛИТ ГМ
     # =========================================================
-    def _get_variant_values(self):
-        if not self.plans:
-            return ["(нет доступных вариантов)"]
-        values = []
-        for key in sorted(self.plans.keys()):
-            plan = self.plans[key]
-            title = plan.get("title", key)
-            values.append(title)
-        return values
-
-    def _get_variant_key_from_title(self, title):
-        for key, plan in self.plans.items():
-            if plan.get("title", key) == title:
-                return key
-        return None
-
     def _attach_gm_completer(self, entry: QLineEdit):
         if not self.gm_data:
             return
 
         items = []
         for gm in self.gm_data:
-            code = str(gm.get("Код", ""))
+            code = str(gm.get("Код", "")).strip()
             name = gm.get("Название", "")
-            items.append(f"{code} — {name}")
+            if code:
+                items.append(f"{code} — {name}")
 
         model = QStringListModel(items, entry)
         completer = QCompleter(model, entry)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
-        completer.setMaxVisibleItems(10)
+        completer.setMaxVisibleItems(15)
 
+        style_popup(completer)
         entry.setCompleter(completer)
 
         def _on_activated(text):
-            if " — " in text:
-                code_only = text.split(" — ", 1)[0]
+            match = re.search(r'\b(\d{6})\b', text)
+            if match:
+                entry.setText(match.group(1))
             else:
-                code_only = text
-            entry.setText(code_only)
+                entry.setText(text)
 
         completer.activated.connect(_on_activated)
 
@@ -422,7 +396,7 @@ class InventoryFrame(BaseFrame):
             self.lbl_gm_name.setText("")
             return
 
-        gm = self._find_gm_by_code(code)
+        gm = find_gm_by_code(code, self.gm_data)
         if gm:
             name = gm.get("Название", "")
             self.lbl_gm_name.setText(f"✓ {name}")
@@ -443,7 +417,7 @@ class InventoryFrame(BaseFrame):
         sd = date(qdate.year(), qdate.month(), qdate.day())
 
         variant_title = self.combo_variant.currentText()
-        variant_key = self._get_variant_key_from_title(variant_title)
+        variant_key = get_variant_key_from_title(variant_title, self.plans)
 
         if not variant_key:
             self.lbl_end_date.setText("—")
@@ -459,8 +433,7 @@ class InventoryFrame(BaseFrame):
             self.lbl_end_date.setText("—")
             return
 
-        ed = sd + timedelta(days=days_total - 1)
-
+        ed = calculate_end_date(sd, days_total)
         self.lbl_end_date.setText(f"{ed.strftime('%d.%m.%Y')} ({days_total} суток)")
         self.lbl_end_date.setStyleSheet(
             f"color: {self.COLORS.get('text', '#E0E0E0')};"
@@ -480,6 +453,13 @@ class InventoryFrame(BaseFrame):
             return
 
         code = self.gm_input.text().strip()
+
+        if len(code) != 6 or not code.isdigit():
+            match = re.search(r'\b(\d{6})\b', code)
+            if match:
+                code = match.group(1)
+                self.gm_input.setText(code)
+
         if len(code) != 6 or not code.isdigit():
             self.lbl_form_status.setText("⚠️ Введите корректный код ГМ (6 цифр)")
             self.lbl_form_status.setStyleSheet(
@@ -487,7 +467,7 @@ class InventoryFrame(BaseFrame):
             )
             return
 
-        gm = self._find_gm_by_code(code)
+        gm = find_gm_by_code(code, self.gm_data)
         if not gm:
             self.lbl_form_status.setText("⚠️ ГМ не найден в базе")
             self.lbl_form_status.setStyleSheet(
@@ -496,7 +476,7 @@ class InventoryFrame(BaseFrame):
             return
 
         variant_title = self.combo_variant.currentText()
-        variant_key = self._get_variant_key_from_title(variant_title)
+        variant_key = get_variant_key_from_title(variant_title, self.plans)
         if not variant_key:
             self.lbl_form_status.setText("⚠️ Не выбран вариант")
             self.lbl_form_status.setStyleSheet(
@@ -509,19 +489,9 @@ class InventoryFrame(BaseFrame):
 
         qdate = self.date_start.date()
         sd = date(qdate.year(), qdate.month(), qdate.day())
-        ed = sd + timedelta(days=days_total - 1)
+        ed = calculate_end_date(sd, days_total)
 
-        checklist_state = {}
-        for day_data in plan.get("days", []):
-            day_num = day_data.get("day_num", 1)
-            day_key = f"day_{day_num}"
-            checklist_state[day_key] = {}
-            for shift_idx, shift_data in enumerate(day_data.get("shifts", [])):
-                shift_key = f"shift_{shift_idx + 1}"
-                tasks = shift_data.get("tasks", [])
-                checklist_state[day_key][shift_key] = {
-                    str(i): False for i in range(len(tasks))
-                }
+        checklist_state = build_empty_checklist(plan)
 
         self.active_inventory = {
             "gm_code": code,
@@ -549,7 +519,7 @@ class InventoryFrame(BaseFrame):
             pass
 
         self._render_inventory()
-        self._render_checklist()
+        self._rebuild_checklist_view()
 
     # =========================================================
     # АКТИВНАЯ ИНВЕНТАРИЗАЦИЯ — отображение
@@ -586,16 +556,14 @@ class InventoryFrame(BaseFrame):
         end_str = inv.get("end_date", "")
         days_total = inv.get("days_total", 1)
 
-        start_fmt = self._fmt_date(start_str)
-        end_fmt = self._fmt_date(end_str)
+        start_fmt = format_date_ru(start_str)
+        end_fmt = format_date_ru(end_str)
 
-        days_passed = 1
         try:
             sd = datetime.fromisoformat(start_str).date()
-            days_passed = (date.today() - sd).days + 1
-            days_passed = max(1, min(days_passed, days_total))
+            days_passed = calculate_days_passed(sd, days_total)
         except Exception:
-            pass
+            days_passed = 1
 
         info_row = QHBoxLayout()
 
@@ -615,29 +583,15 @@ class InventoryFrame(BaseFrame):
 
         self.inventory_container.addLayout(info_row)
 
-        # Прогресс по дням
+        # Прогресс по дням (серый)
         progress_value = days_passed / days_total if days_total > 0 else 0
         pbar = QProgressBar(card)
+        pbar.setObjectName("GlobalProgress")
         pbar.setMinimum(0)
         pbar.setMaximum(100)
         pbar.setValue(int(progress_value * 100))
         pbar.setFixedHeight(12)
         pbar.setTextVisible(False)
-        color = (
-            self.COLORS.get('success', '#4CAF50')
-            if progress_value >= 1.0
-            else self.COLORS.get('button', '#D42626')
-        )
-        pbar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {self.COLORS.get('bg', '#1B1B1B')};
-                border-radius: 6px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {color};
-                border-radius: 6px;
-            }}
-        """)
         self.inventory_container.addWidget(pbar)
 
         pct_label = QLabel(f"{int(progress_value * 100)}%", card)
@@ -688,8 +642,9 @@ class InventoryFrame(BaseFrame):
     # =========================================================
     # ЧЕК-ЛИСТ
     # =========================================================
-    def _render_checklist(self):
+    def _rebuild_checklist_view(self):
         self._clear_layout(self.checklist_container)
+        self._checkboxes = {}
 
         card = self.checklist_card
 
@@ -719,17 +674,11 @@ class InventoryFrame(BaseFrame):
 
         try:
             sd = datetime.fromisoformat(start_str).date()
-            days_passed = (date.today() - sd).days + 1
-            days_passed = max(1, min(days_passed, days_total))
+            days_passed = calculate_days_passed(sd, days_total)
         except Exception:
             days_passed = 1
 
-        day_data = None
-        for d in plan.get("days", []):
-            if d.get("day_num") == days_passed:
-                day_data = d
-                break
-
+        day_data = get_day_data(plan, days_passed)
         if not day_data:
             err = QLabel(f"⚠️ День {days_passed} не найден в плане", card)
             err.setFont(self.FONTS['label'])
@@ -745,66 +694,32 @@ class InventoryFrame(BaseFrame):
         title.setStyleSheet(f"color: {self.COLORS.get('button', '#D42626')};")
         self.checklist_container.addWidget(title)
 
-        # --- Общий прогресс по ВСЕМ дням ---
-        total_all = 0
-        done_all = 0
         checklist = self.active_inventory.get("checklist", {})
-
-        for d in plan.get("days", []):
-            d_num = d.get("day_num", 1)
-            d_key = f"day_{d_num}"
-            d_state = checklist.get(d_key, {})
-            for shift_idx, shift_data in enumerate(d.get("shifts", [])):
-                s_key = f"shift_{shift_idx + 1}"
-                tasks = shift_data.get("tasks", [])
-                s_state = d_state.get(s_key, {})
-                total_all += len(tasks)
-                done_all += sum(1 for i in range(len(tasks)) if s_state.get(str(i), False))
-
-        progress_all = done_all / total_all if total_all > 0 else 0
+        progress = calculate_progress(checklist, plan)
 
         prog_row = QHBoxLayout()
-        lbl_prog = QLabel(f"Всего: {done_all} из {total_all}", card)
+        lbl_prog = QLabel(f"Всего: {progress['done']} из {progress['total']}", card)
         lbl_prog.setFont(self.FONTS['small'])
         lbl_prog.setStyleSheet(f"color: {self.COLORS.get('text_dim', '#A0A0A0')};")
         prog_row.addWidget(lbl_prog, 1)
 
-        lbl_pct = QLabel(f"{int(progress_all * 100)}%", card)
+        lbl_pct = QLabel(f"{progress['percent']}%", card)
         lbl_pct.setFont(self.FONTS['label'])
-        pct_color = (
-            self.COLORS.get('success', '#4CAF50')
-            if progress_all >= 1.0
-            else self.COLORS.get('text', '#E0E0E0')
-        )
+        pct_color = self.COLORS.get('text', '#E0E0E0')  # всегда серый/белый, не зелёный
         lbl_pct.setStyleSheet(f"color: {pct_color};")
         prog_row.addWidget(lbl_pct)
 
         self.checklist_container.addLayout(prog_row)
 
         pbar = QProgressBar(card)
+        pbar.setObjectName("GlobalProgress")
         pbar.setMinimum(0)
         pbar.setMaximum(100)
-        pbar.setValue(int(progress_all * 100))
+        pbar.setValue(progress['percent'])
         pbar.setFixedHeight(8)
         pbar.setTextVisible(False)
-        pb_color = (
-            self.COLORS.get('success', '#4CAF50')
-            if progress_all >= 1.0
-            else self.COLORS.get('button', '#D42626')
-        )
-        pbar.setStyleSheet(f"""
-            QProgressBar {{
-                background-color: {self.COLORS.get('bg', '#1B1B1B')};
-                border-radius: 4px;
-            }}
-            QProgressBar::chunk {{
-                background-color: {pb_color};
-                border-radius: 4px;
-            }}
-        """)
         self.checklist_container.addWidget(pbar)
 
-        # --- Задачи по сменам ---
         day_key = f"day_{days_passed}"
         day_state = checklist.get(day_key, {})
 
@@ -824,28 +739,7 @@ class InventoryFrame(BaseFrame):
                 cb = QCheckBox(task, card)
                 cb.setChecked(is_done)
                 cb.setFont(self.FONTS['small'])
-                cb.setStyleSheet(f"""
-                    QCheckBox {{
-                        background-color: transparent;
-                        color: {self.COLORS.get('text_dim', '#A0A0A0') if is_done else self.COLORS.get('text', '#E0E0E0')};
-                        spacing: 8px;
-                        padding: 4px;
-                    }}
-                    QCheckBox::indicator {{
-                        width: 18px;
-                        height: 18px;
-                        border: 2px solid {self.COLORS.get('border', '#333333')};
-                        border-radius: 4px;
-                        background-color: transparent;
-                    }}
-                    QCheckBox::indicator:hover {{
-                        border-color: {self.COLORS.get('text_dim', '#A0A0A0')};
-                    }}
-                    QCheckBox::indicator:checked {{
-                        background-color: {self.COLORS.get('button', '#D42626')};
-                        border-color: {self.COLORS.get('button', '#D42626')};
-                    }}
-                """)
+                cb.setStyleSheet(self._checkbox_style(is_done))
 
                 cb.stateChanged.connect(
                     lambda state, dk=day_key, sk=shift_key, idx=i:
@@ -853,6 +747,31 @@ class InventoryFrame(BaseFrame):
                 )
 
                 self.checklist_container.addWidget(cb)
+                self._checkboxes[(day_key, shift_key, i)] = cb
+
+    def _checkbox_style(self, is_done: bool) -> str:
+        return f"""
+            QCheckBox {{
+                background-color: transparent;
+                color: {self.COLORS.get('text_dim', '#A0A0A0') if is_done else self.COLORS.get('text', '#E0E0E0')};
+                spacing: 8px;
+                padding: 4px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {self.COLORS.get('border', '#333333')};
+                border-radius: 4px;
+                background-color: transparent;
+            }}
+            QCheckBox::indicator:hover {{
+                border-color: {self.COLORS.get('text_dim', '#A0A0A0')};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {self.COLORS.get('button', '#D42626')};
+                border-color: {self.COLORS.get('button', '#D42626')};
+            }}
+        """
 
     def _toggle_item(self, day_key, shift_key, idx, value):
         if not self.active_inventory:
@@ -865,7 +784,6 @@ class InventoryFrame(BaseFrame):
             checklist[day_key][shift_key] = {}
 
         checklist[day_key][shift_key][str(idx)] = bool(value)
-
         self._save_timer.start()
 
     def _do_save_inventory(self):
@@ -877,7 +795,33 @@ class InventoryFrame(BaseFrame):
         except Exception as e:
             log.warning(f"Не удалось сохранить инвентаризацию: {e}")
 
-        self._render_checklist()
+        self._refresh_checkbox_styles()
+
+    def _refresh_checkbox_styles(self):
+        for (_dk, _sk, _idx), cb in self._checkboxes.items():
+            try:
+                cb.setStyleSheet(self._checkbox_style(cb.isChecked()))
+            except RuntimeError:
+                pass
+
+    # =========================================================
+    # ХУКИ ЖИЗНЕННОГО ЦИКЛА
+    # =========================================================
+    def on_hide(self):
+        try:
+            if self._save_timer.isActive():
+                self._save_timer.stop()
+                self._do_save_inventory()
+        except Exception:
+            pass
+
+    def on_close(self):
+        try:
+            if self._save_timer.isActive():
+                self._save_timer.stop()
+                self._do_save_inventory()
+        except Exception:
+            pass
 
     # =========================================================
     # ДЕЙСТВИЯ
@@ -889,8 +833,7 @@ class InventoryFrame(BaseFrame):
         ok = ask_confirm(
             self,
             "Сменить ГМ",
-            "Текущая инвентаризация будет завершена и перемещена в архив.\n\n"
-            "Продолжить?"
+            "Текущая инвентаризация будет удалена.\n\nПродолжить?"
         )
         if not ok:
             return
@@ -908,12 +851,12 @@ class InventoryFrame(BaseFrame):
             show_error(self, "Ошибка", "Номер ГМ должен состоять из 6 цифр.")
             return
 
-        gm = self._find_gm_by_code(code)
+        gm = find_gm_by_code(code, self.gm_data)
         if not gm:
             show_error(self, "Ошибка", f"ГМ {code} не найден в базе.")
             return
 
-        self._archive_current_inventory()
+        self._finish_current_inventory()
 
         old_inv = self.active_inventory
         self.active_inventory = {
@@ -929,24 +872,13 @@ class InventoryFrame(BaseFrame):
 
         variant_key = self.active_inventory["variant"]
         plan = self.plans.get(variant_key, {})
-        checklist_state = {}
-        for day_data in plan.get("days", []):
-            day_num = day_data.get("day_num", 1)
-            day_key = f"day_{day_num}"
-            checklist_state[day_key] = {}
-            for shift_idx, shift_data in enumerate(day_data.get("shifts", [])):
-                shift_key = f"shift_{shift_idx + 1}"
-                tasks = shift_data.get("tasks", [])
-                checklist_state[day_key][shift_key] = {
-                    str(i): False for i in range(len(tasks))
-                }
-        self.active_inventory["checklist"] = checklist_state
+        self.active_inventory["checklist"] = build_empty_checklist(plan)
 
         self.dm.set_active_inventory(self.active_inventory)
         self._last_inventory_signature = self.dm.signature(self.active_inventory)
 
         self._render_inventory()
-        self._render_checklist()
+        self._rebuild_checklist_view()
 
         try:
             self.dm.add_action(
@@ -967,69 +899,26 @@ class InventoryFrame(BaseFrame):
         ok = ask_confirm(
             self,
             "Завершить инвентаризацию?",
-            f"ГМ {code} — {name}\n\n"
-            f"Инвентаризация переместится в «Архив»."
+            f"ГМ {code} — {name}\n\nЧек-лист будет удалён. Продолжить?"
         )
         if not ok:
             return
 
-        self._archive_current_inventory()
+        self._finish_current_inventory()
+        self._render_inventory()
+        self._rebuild_checklist_view()
+
+    def _finish_current_inventory(self):
+        if not self.active_inventory:
+            return
+
+        gm_code = self.active_inventory.get("gm_code", "")
 
         self.active_inventory = None
         self.dm.set_active_inventory(None)
         self._last_inventory_signature = None
 
-        self._render_inventory()
-        self._render_checklist()
-
-    def _archive_current_inventory(self):
-        if not self.active_inventory:
-            return
-
-        inv = dict(self.active_inventory)
-        inv["end_date"] = date.today().isoformat()
-
-        try:
-            sd = datetime.fromisoformat(inv.get("start_date", "")).date()
-            ed = date.today()
-            inv["days_passed"] = (ed - sd).days + 1
-        except Exception:
-            inv["days_passed"] = 1
-
-        gm_code = inv.get("gm_code", "")
-        cl_progress = {}
-
-        for day_key, shifts in inv.get("checklist", {}).items():
-            total = 0
-            done = 0
-            for shift_state in shifts.values():
-                for v in shift_state.values():
-                    total += 1
-                    if v:
-                        done += 1
-            cl_progress[day_key] = f"{done}/{total}"
-
-        inv["checklists_progress"] = cl_progress
-        inv["sum_difference"] = None
-
-        result_folder = os.path.join(
-            BASE_DIR, "Готовые", "Инвентаризации",
-            f"{gm_code}_{inv.get('start_date', '')}"
-        )
-        inv["result_folder"] = result_folder
-
-        archive = self.dm.get_inventory_archive() or []
-        archive.append(inv)
-        self.dm.set_inventory_archive(archive)
-
-        try:
-            self.dm.add_action(
-                "Завершена инвентаризация",
-                f"ГМ {gm_code} — {inv.get('gm_name', '')}",
-                "✅"
-            )
-        except Exception:
-            pass
+        log.info(f"Инвентаризация завершена (чек-лист удалён): ГМ {gm_code}")
 
     # =========================================================
     # ПЛАН НА ВСЕ ДНИ
@@ -1121,26 +1010,10 @@ class InventoryFrame(BaseFrame):
         dlg.exec()
 
     # =========================================================
-    # УТИЛИТЫ
+    # REFRESH
     # =========================================================
-    @staticmethod
-    def _fmt_date(iso_str):
-        if not iso_str:
-            return "—"
-        try:
-            return datetime.fromisoformat(iso_str).strftime("%d.%m.%Y")
-        except Exception:
-            return iso_str
-
-    def _find_gm_by_code(self, code):
-        code = str(code).strip()
-        for gm in self.gm_data:
-            if str(gm.get("Код", "")).strip() == code:
-                return gm
-        return None
-
     def refresh(self):
         self._load_all_from_cache()
         self._render_inventory()
-        self._render_checklist()
+        self._rebuild_checklist_view()
         self._refresh_async()

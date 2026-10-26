@@ -69,15 +69,11 @@ Logs/
 # Временные файлы
 temp/
 
-# Профиль QtWebEngine (cookies, кэш)
-data/webengine/
-
-# Локальные настройки (у каждого свои)
-data/user_settings.json
-data/actions_history.json
-data/active_inventory.json
-data/inventory_archive.json
-data/gm_notes.json
+# Legacy data/ в корне проекта.
+# Данные ревизора живут в %LOCALAPPDATA%/Core_V3_0/data —
+# git их не видит. Эта папка в корне — только источник для
+# одноразовой миграции (utils/data_migration.py).
+data/
 
 # Локальный config (цвета/шрифты могут отличаться)
 # ВНИМАНИЕ: закомментируй, если хочешь хранить config.json в репозитории
@@ -103,4 +99,7 @@ $RECYCLE.BIN/
 # =========================================================
 .DS_Store
 .AppleDouble
-.LSOverride
+.
+# Отладочные скрипты и временные результаты
+output/
+check_*.py

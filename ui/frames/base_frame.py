@@ -13,10 +13,20 @@
 Плюс PlaceholderFrame — заглушка для нереализованных вкладок.
 
 ИЗМЕНЕНИЯ:
-- run_on_ui переведён на pyqtSignal (правильная доставка из фонового потока)
-- убран winfo_exists (это Tkinter-метод, в PyQt его нет)
-- добавлена проверка sip.isdeleted
+- run_in_thread: оборачивает target в try/except. Раньше исключение
+  в фоновой задаче тихо убивало поток и терялось. Теперь — логируется
+  с полным traceback, а в статус-бар выводится сообщение.
+- run_on_ui: проверяет sip.isdeleted до emit — чтобы не упасть,
+  если виджет уже удалён.
+- Добавлены хуки on_hide() и on_close(). Они вызываются из AuditApp:
+    * on_hide — при переключении на другую вкладку (show_tab).
+    * on_close — при закрытии приложения (closeEvent).
+  Фреймы могут их переопределить, чтобы сохранить данные
+  (например, чек-лист инвентаризации перед закрытием).
 """
+import threading
+import traceback
+
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PyQt6 import sip
@@ -51,6 +61,26 @@ class BaseFrame(QWidget):
         # Подключаем сигнал к обработчику. Живём в главном потоке —
         # значит, _execute_ui_call всегда вызывается в главном потоке.
         self._ui_call.connect(self._execute_ui_call)
+
+    # =========================================================
+    # ХУКИ ЖИЗНЕННОГО ЦИКЛА
+    # =========================================================
+    def on_hide(self):
+        """Вызывается при переключении на другую вкладку.
+
+        Переопределяется фреймами, которым нужно сохранить данные
+        перед тем, как их скроют (например, чек-лист инвентаризации).
+        По умолчанию — ничего не делает.
+        """
+        pass
+
+    def on_close(self):
+        """Вызывается при закрытии приложения.
+
+        Переопределяется фреймами, которым нужно сохранить данные
+        при выходе. По умолчанию — ничего не делает.
+        """
+        pass
 
     # =========================================================
     # СТАТУС-БАР
@@ -118,14 +148,29 @@ class BaseFrame(QWidget):
 
         ВАЖНО: в Qt обновлять UI можно ТОЛЬКО из главного потока.
         Если target хочет обновить UI — используй self.run_on_ui(fn).
+
+        Оборачивает target в try/except — чтобы исключение в фоне
+        не терялось, а логировалось с полным traceback.
         """
-        import threading
-        threading.Thread(
-            target=target,
-            args=args,
-            kwargs=kwargs,
-            daemon=True
-        ).start()
+        def _wrapped():
+            try:
+                target(*args, **kwargs)
+            except Exception as e:
+                tb = traceback.format_exc()
+                log.error(
+                    f"Исключение в фоновой задаче ({self.tab_name}): {e}\n{tb}"
+                )
+                # Показываем пользователю в статус-баре
+                try:
+                    self.run_on_ui(
+                        self.set_status,
+                        f"Ошибка: {e}",
+                        self.COLORS.get('error', '#FF5252')
+                    )
+                except Exception:
+                    pass
+
+        threading.Thread(target=_wrapped, daemon=True).start()
 
     def run_on_ui(self, fn, *args, **kwargs):
         """Выполняет fn в главном потоке Qt.
@@ -133,8 +178,21 @@ class BaseFrame(QWidget):
         Реализовано через pyqtSignal — Qt сам доставит вызов
         в поток, где живёт виджет (главный). Работает безопасно
         из любого фонового потока.
+
+        Проверяет sip.isdeleted — если виджет уже удалён, не emit'ит.
         """
-        self._ui_call.emit(fn, args, kwargs)
+        # Если виджет удалён — не пытаемся emit
+        try:
+            if sip.isdeleted(self):
+                return
+        except Exception:
+            pass
+
+        try:
+            self._ui_call.emit(fn, args, kwargs)
+        except RuntimeError as e:
+            # Виджет мог быть удалён между проверкой и emit
+            log.debug(f"run_on_ui: emit не удался: {e}")
 
     def _execute_ui_call(self, fn, args, kwargs):
         """Принимает сигнал и вызывает fn в главном потоке."""

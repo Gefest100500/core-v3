@@ -2,21 +2,11 @@
 """
 Расстояние между ГМ.
 
-- Два поля с автокомплитом ГМ (QCompleter)
-- Расчёт по прямой (haversine) + оценка по дорогам
-- Список магазинов в каждом городе
-- Копирование результата в буфер
-
-Улучшения по сравнению с CTk-версией:
-- QCompleter вместо самодельного окна с подсказками
-- Убран _on_global_click
-- Исправлен баг с импортом add_action из home_frame
-- Запоминаются последние ГМ (QSettings)
-- Кнопка "Поменять местами"
-
-Правки стиля:
-- Убраны все эмодзи
-- Кнопки — SVG-иконки
+ИЗМЕНЕНИЯ:
+- popup QCompleter стилизуется через style_popup (единый стиль).
+- Поля ГМ переведены на AnimatedPlaceholderEntry
+  (побуквенный плейсхолдер). QCompleter принудительно
+  показывается при вводе (complete()).
 """
 import os
 
@@ -29,7 +19,8 @@ from PyQt6.QtWidgets import (
 
 from ui.frames.base_frame import BaseFrame
 from ui.components.widgets import (
-    create_card, StyledEntry, PrimaryButton, SecondaryButton
+    create_card, StyledEntry, PrimaryButton, SecondaryButton,
+    style_popup, AnimatedPlaceholderEntry,
 )
 from ui.icons import get_icon_simple
 from core.gm_map import (
@@ -65,7 +56,6 @@ class DistanceFrame(BaseFrame):
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(10)
 
-        # --- Верхняя панель: Назад ---
         top = QHBoxLayout()
         btn_back = SecondaryButton(
             "Назад в утилиты",
@@ -77,16 +67,13 @@ class DistanceFrame(BaseFrame):
         top.addStretch()
         root_layout.addLayout(top)
 
-        # --- Заголовок (без эмодзи) ---
         title = QLabel("РАССТОЯНИЕ МЕЖДУ ГМ", self)
         title.setFont(self.FONTS['title'])
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root_layout.addWidget(title)
 
-        # --- Карточка с полями ---
         card = create_card(self)
 
-        # --- ГМ №1 ---
         row1 = QHBoxLayout()
         row1.setSpacing(10)
 
@@ -95,7 +82,7 @@ class DistanceFrame(BaseFrame):
         lbl1.setFixedWidth(100)
         row1.addWidget(lbl1)
 
-        self.entry_gm1 = StyledEntry(
+        self.entry_gm1 = AnimatedPlaceholderEntry(
             placeholder="Введите название ГМ или адрес",
             parent=card
         )
@@ -105,7 +92,6 @@ class DistanceFrame(BaseFrame):
 
         card.layout().addLayout(row1)
 
-        # --- ГМ №2 ---
         row2 = QHBoxLayout()
         row2.setSpacing(10)
 
@@ -114,7 +100,7 @@ class DistanceFrame(BaseFrame):
         lbl2.setFixedWidth(100)
         row2.addWidget(lbl2)
 
-        self.entry_gm2 = StyledEntry(
+        self.entry_gm2 = AnimatedPlaceholderEntry(
             placeholder="Введите название ГМ или адрес",
             parent=card
         )
@@ -126,12 +112,10 @@ class DistanceFrame(BaseFrame):
 
         root_layout.addWidget(card)
 
-        # --- Кнопки ---
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
         btn_row.addStretch()
 
-        # 🆕 РАССЧИТАТЬ с SVG-иконкой
         self.btn_calc = PrimaryButton(
             "РАССЧИТАТЬ",
             on_click=self.calculate,
@@ -145,7 +129,6 @@ class DistanceFrame(BaseFrame):
             self.btn_calc.setIconSize(QSize(18, 18))
         btn_row.addWidget(self.btn_calc)
 
-        # 🆕 Поменять с SVG-иконкой
         btn_swap = SecondaryButton(
             "Поменять",
             on_click=self._swap_gms,
@@ -159,7 +142,6 @@ class DistanceFrame(BaseFrame):
             btn_swap.setIconSize(QSize(16, 16))
         btn_row.addWidget(btn_swap)
 
-        # 🆕 Очистить с SVG-иконкой
         btn_clear = SecondaryButton(
             "Очистить",
             on_click=self.clear,
@@ -176,7 +158,6 @@ class DistanceFrame(BaseFrame):
         btn_row.addStretch()
         root_layout.addLayout(btn_row)
 
-        # --- Карточка результата ---
         self.result_card = create_card(self)
         root_layout.addWidget(self.result_card, 1)
 
@@ -205,7 +186,6 @@ class DistanceFrame(BaseFrame):
         """)
         self.result_card.layout().addWidget(self.result_text, 1)
 
-        # 🆕 Кнопка "Скопировать" с SVG-иконкой
         self.btn_copy = PrimaryButton(
             "Скопировать результат",
             on_click=self.copy_to_clipboard,
@@ -265,7 +245,25 @@ class DistanceFrame(BaseFrame):
         completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         completer.setMaxVisibleItems(10)
 
+        # Единый стиль popup
+        style_popup(completer)
+
         entry.setCompleter(completer)
+
+        # Принудительно показываем popup при вводе.
+        # QCompleter сам по себе должен это делать, но с кастомным
+        # QLineEdit (paintEvent) иногда не срабатывает — вызываем явно.
+        def _on_text_edited_for_completer(text):
+            if not text:
+                completer.popup().hide()
+                return
+            completer.setCompletionPrefix(text)
+            if completer.completionCount() > 0:
+                completer.complete()
+            else:
+                completer.popup().hide()
+
+        entry.textEdited.connect(_on_text_edited_for_completer)
 
     # =========================================================
     # СОХРАНЕНИЕ/ВОССТАНОВЛЕНИЕ
@@ -353,7 +351,6 @@ class DistanceFrame(BaseFrame):
             self._set_error("Ошибка расчёта")
             return
 
-        # Заголовок без 📍
         self.result_title.setText(f"{city1} → {city2}")
         self.result_title.setStyleSheet(
             f"color: {self.COLORS.get('success', '#4CAF50')};"

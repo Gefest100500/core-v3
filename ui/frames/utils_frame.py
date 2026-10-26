@@ -5,16 +5,18 @@
 - Карточки с SVG-иконкой, названием, описанием
 - Клик по карточке открывает вкладку
 - Подсветка при наведении
-- Горячие клавиши Ctrl+1..7
+- Горячие клавиши Ctrl+1..N
 
-Улучшения по сравнению с CTk-версией:
-- Вся карточка кликабельна (не только кнопка «Открыть»)
-- Hover-эффект на карточке
-- Горячие клавиши Ctrl+1..Ctrl+7
-
-Правки стиля:
-- Убраны эмодзи из заголовка
-- SVG-иконки вместо эмодзи на карточках
+ИЗМЕНЕНИЯ:
+- Карточка «Анализ Нарушений» больше не «в разработке» —
+  открывается как обычная вкладка.
+- ФИКС QShortcut: ссылки сохраняются в self._shortcuts.
+  Раньше QShortcut создавался локально и не сохранялся —
+  Python GC мог его собрать, и горячие клавиши переставали
+  работать.
+- Добавлены карточки «Принтеры» и «Сетевые папки ГМ».
+  Они открывают те же фреймы, что раньше были в сайдбаре.
+- Добавлена карточка «ТСД (QR-коды)».
 """
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QKeySequence, QShortcut, QIcon
@@ -39,20 +41,33 @@ class ToolCard(QFrame):
         super().__init__(parent)
         self.tab_name = tool["tab"]
         self.colors = colors
+        self.in_development = tool.get("in_development", False)
 
         self.setObjectName("ToolCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(80)
 
+        # Для «в разработке» — приглушённые цвета
+        if self.in_development:
+            bg = colors.get('card', '#222222')
+            border = colors.get('border', '#333333')
+            hover_bg = colors.get('card', '#222222')
+            hover_border = colors.get('text_dim', '#A0A0A0')
+        else:
+            bg = colors.get('card', '#222222')
+            border = colors.get('border', '#333333')
+            hover_bg = colors.get('sidebar', '#2A2A2A')
+            hover_border = colors.get('button', '#D42626')
+
         self.setStyleSheet(f"""
             QFrame#ToolCard {{
-                background-color: {colors.get('card', '#222222')};
-                border: 2px solid {colors.get('border', '#333333')};
+                background-color: {bg};
+                border: 2px solid {border};
                 border-radius: 12px;
             }}
             QFrame#ToolCard:hover {{
-                background-color: {colors.get('sidebar', '#2A2A2A')};
-                border-color: {colors.get('button', '#D42626')};
+                background-color: {hover_bg};
+                border-color: {hover_border};
             }}
         """)
 
@@ -60,14 +75,19 @@ class ToolCard(QFrame):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(15)
 
-        # 🆕 SVG-иконка
+        # SVG-иконка
         icon_label = QLabel(self)
         icon_label.setFixedWidth(44)
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        icon_color = (
+            colors.get('text_dim', '#A0A0A0')
+            if self.in_development
+            else colors.get('text', '#E0E0E0')
+        )
         icon = get_icon_simple(
             tool["icon_name"],
-            color=colors.get('text', '#E0E0E0'),
+            color=icon_color,
             size=28
         )
         if not icon.isNull():
@@ -79,10 +99,14 @@ class ToolCard(QFrame):
         text_layout = QVBoxLayout()
         text_layout.setSpacing(2)
 
+        title_color = (
+            colors.get('text_dim', '#A0A0A0')
+            if self.in_development
+            else colors.get('text', '#E0E0E0')
+        )
         title = QLabel(tool["title"], self)
         title.setStyleSheet(
-            f"font-size: 15px; font-weight: bold; "
-            f"color: {colors.get('text', '#E0E0E0')};"
+            f"font-size: 15px; font-weight: bold; color: {title_color};"
         )
         text_layout.addWidget(title)
 
@@ -94,24 +118,43 @@ class ToolCard(QFrame):
 
         layout.addLayout(text_layout, 1)
 
-        # Кнопка «Открыть»
-        btn = QPushButton("Открыть →", self)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setFixedSize(140, 40)
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {colors.get('button', '#D42626')};
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{
-                background-color: {colors.get('hover', '#B71C1C')};
-            }}
-        """)
-        btn.clicked.connect(lambda: self.clicked.emit(self.tab_name))
-        layout.addWidget(btn)
+        # Кнопка — «Открыть» или «В разработке»
+        if self.in_development:
+            badge = QPushButton("В разработке", self)
+            badge.setCursor(Qt.CursorShape.ForbiddenCursor)
+            badge.setFixedSize(140, 40)
+            badge.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: transparent;
+                    color: {colors.get('text_dim', '#A0A0A0')};
+                    border: 1px solid {colors.get('border', '#333333')};
+                    border-radius: 8px;
+                    font-size: 12px;
+                }}
+                QPushButton:hover {{
+                    border-color: {colors.get('text_dim', '#A0A0A0')};
+                }}
+            """)
+            badge.clicked.connect(lambda: self.clicked.emit(self.tab_name))
+            layout.addWidget(badge)
+        else:
+            btn = QPushButton("Открыть →", self)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setFixedSize(140, 40)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {colors.get('button', '#D42626')};
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-size: 13px;
+                }}
+                QPushButton:hover {{
+                    background-color: {colors.get('hover', '#B71C1C')};
+                }}
+            """)
+            btn.clicked.connect(lambda: self.clicked.emit(self.tab_name))
+            layout.addWidget(btn)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -125,6 +168,10 @@ class UtilsFrame(BaseFrame):
 
     def __init__(self, parent, name=None):
         super().__init__(parent, name)
+
+        # ФИКС: сохраняем ссылки на QShortcut, чтобы GC не собрал
+        self._shortcuts = []
+
         self._setup_ui()
         self._setup_hotkeys()
 
@@ -144,7 +191,7 @@ class UtilsFrame(BaseFrame):
 
         # Подзаголовок
         info = QLabel(
-            "Инструменты для аудита. Кликните по карточке или нажмите Ctrl+1..7.",
+            "Инструменты для аудита. Кликните по карточке или нажмите Ctrl+1..N.",
             self
         )
         info.setFont(self.FONTS['small'])
@@ -168,7 +215,7 @@ class UtilsFrame(BaseFrame):
         self.scroll.setWidget(self.scroll_content)
         root_layout.addWidget(self.scroll, 1)
 
-        # 🆕 Список утилит — icon_name вместо emoji
+        # Список утилит
         self._tools = [
             {
                 "icon_name": "kv",
@@ -212,6 +259,24 @@ class UtilsFrame(BaseFrame):
                 "desc": "Рассчитать расстояние между магазинами",
                 "tab": "distance",
             },
+            {
+                "icon_name": "printers",
+                "title": "Принтеры",
+                "desc": "Установка и переименование принтеров",
+                "tab": "printers",
+            },
+            {
+                "icon_name": "gm",
+                "title": "Сетевые папки ГМ",
+                "desc": "Ярлыки на сетевые папки и папки ПИ",
+                "tab": "gm",
+            },
+            {
+                "icon_name": "tsd",
+                "title": "ТСД (QR-коды)",
+                "desc": "Генерация QR-кодов для настройки терминалов",
+                "tab": "tsd",
+            },
         ]
 
         for tool in self._tools:
@@ -225,11 +290,19 @@ class UtilsFrame(BaseFrame):
     # ГОРЯЧИЕ КЛАВИШИ
     # =========================================================
     def _setup_hotkeys(self):
+        """Ставит Ctrl+1..N на открытие утилит.
+
+        ФИКС: сохраняем QShortcut в self._shortcuts — иначе Python GC
+        может собрать объект, и шорткат перестанет работать.
+        """
         for i, tool in enumerate(self._tools, start=1):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
+            # Замыкаем tab_name через дефолтный аргумент,
+            # чтобы не поймать последний tool во всех лямбдах.
             shortcut.activated.connect(
                 lambda t=tool["tab"]: self._open_tool(t)
             )
+            self._shortcuts.append(shortcut)
 
     # =========================================================
     # ОТКРЫТИЕ УТИЛИТЫ

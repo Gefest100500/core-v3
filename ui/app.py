@@ -1,18 +1,14 @@
 # ui/app.py
 """
 Главное окно Core V3.0.
-
-Сайдбар + контент. Переключение вкладок по нажатию.
-Тёмная тема, единый стиль через QSS (см. ui/styles.py). SVG-иконки.
-
-Анализаторы создаются один раз при старте и передаются в фреймы.
-
-ИЗМЕНЕНИЯ:
-- Убрана вкладка «Тандер / Модуль» (RDP не встраивается в Qt)
 """
 import os
+from datetime import datetime, timedelta
 
-from PyQt6.QtCore import Qt, QTimer, QSettings, QSize
+from PyQt6.QtCore import (
+    Qt, QTimer, QSettings, QSize, QPropertyAnimation, QEasingCurve,
+    pyqtSignal
+)
 from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -20,14 +16,35 @@ from PyQt6.QtWidgets import (
     QProgressBar
 )
 
-from config import COLORS, get_fonts, init_folders, CONFIG_AUTO_CREATED, FOLDERS
+from config import get_config, get_fonts
 from utils.logger import log
 from utils.data_manager import get_data_manager
-from ui.icons import get_icon
+from ui.icons import get_icon, get_icon_simple
 from ui.styles import build_qss
 
 
+SIDEBAR_WIDTH_COLLAPSED = 64
+SIDEBAR_WIDTH_EXPANDED = 260
+SIDEBAR_ANIM_MS = 280
+SIDEBAR_COLLAPSE_DELAY_MS = 100
+
+AUTO_FETCH_DELAY_MS = 5000
+SYNC_INTERVAL_HOURS = 24
+
+SETTINGS_ORG = "SilchenkoAleksey"
+SETTINGS_APP = "CoreV3"
+LAST_SYNC_KEY = "emails_last_sync"
+
+ICON_SIZE = 22
+ICON_LEFT_MARGIN = 21
+ICON_CENTER_OFFSET = 2
+
+
 class AuditApp(QMainWindow):
+
+    _status_call = pyqtSignal(str)
+    ready = pyqtSignal()
+
     def __init__(self):
         super().__init__()
 
@@ -35,12 +52,13 @@ class AuditApp(QMainWindow):
         self.resize(1400, 900)
         self.setMinimumSize(1100, 700)
 
-        self.FOLDERS = init_folders()
+        cfg = get_config()
+        self.FOLDERS = cfg.init_folders()
         self.data_manager = get_data_manager()
         self.data_manager.set_root(self)
 
         self.FONTS = get_fonts()
-        self.COLORS = COLORS
+        self.COLORS = cfg.COLORS
 
         self._init_analyzers()
 
@@ -53,22 +71,28 @@ class AuditApp(QMainWindow):
 
         self.frames = {}
         self.sidebar_buttons = {}
+        self.sidebar_icons = {}
         self.current_tab_name = None
+
+        self._sidebar_collapsed = True
+        self._sidebar_anim = None
+        self._sidebar_anim_max = None
+        self._collapse_timer = None
+
+        self._splash = None
+        self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+
+        self._status_call.connect(self._on_status_from_bg)
 
         self._setup_ui()
         self._apply_style()
         self._restore_geometry()
+        self._setup_sidebar_animation()
+        self._install_sidebar_hover()
+        self._apply_sidebar_state(collapsed=True)
 
         log.info("AuditApp инициализирован")
 
-        if CONFIG_AUTO_CREATED:
-            QTimer.singleShot(300, self._show_config_notice)
-
-        QTimer.singleShot(1000, self._preload_frames)
-
-    # =========================================================
-    # АНАЛИЗАТОРЫ
-    # =========================================================
     def _init_analyzers(self):
         self.kv_analyzer = None
         self.pal_analyzer = None
@@ -92,9 +116,122 @@ class AuditApp(QMainWindow):
         except Exception as e:
             log.error(f"Ошибка создания OsMbpAnalyzer: {e}")
 
-    # =========================================================
-    # ДАННЫЕ ДЛЯ ФРЕЙМОВ
-    # =========================================================
+    def _needs_sync(self) -> bool:
+        try:
+            last = self._settings.value(LAST_SYNC_KEY, "")
+            if not last:
+                return True
+            last_dt = datetime.fromisoformat(str(last))
+            return datetime.now() - last_dt > timedelta(hours=SYNC_INTERVAL_HOURS)
+        except Exception:
+            return True
+
+    def _mark_sync_done(self):
+        try:
+            now = datetime.now().isoformat()
+            self._settings.setValue(LAST_SYNC_KEY, now)
+            log.info(f"Синхронизация почты: {now}")
+        except Exception as e:
+            log.warning(f"Не удалось сохранить дату синхронизации: {e}")
+
+    def start_background_init(self, splash=None):
+        self._splash = splash
+
+        preload_names = [
+            "inventory", "archive", "utils", "ai",
+            "timesheet", "terminal", "web",
+        ]
+        self._init_total = len(preload_names) + 1
+        self._init_done = 0
+
+        self._update_splash("Загрузка модулей...", 0)
+
+        self._preload_index = 0
+        self._preload_names = preload_names
+        QTimer.singleShot(50, self._preload_next)
+
+    def _preload_next(self):
+        if self._preload_index >= len(self._preload_names):
+            self._start_email_fetch()
+            return
+
+        name = self._preload_names[self._preload_index]
+        self._preload_index += 1
+
+        pct = int(100 * self._preload_index / max(self._init_total, 1))
+        self._update_splash(f"Загрузка: {name}...", pct)
+
+        try:
+            if name not in self.frames or self.frames[name] is None:
+                frame = self._create_frame(name)
+                if frame is not None:
+                    self.frames[name] = frame
+                    self.content.addWidget(frame)
+                    frame.hide()
+                    log.debug(f"Preloaded frame: {name}")
+        except Exception as e:
+            log.debug(f"Preload {name} failed: {e}")
+
+        self._init_done += 1
+        QTimer.singleShot(30, self._preload_next)
+
+    def _start_email_fetch(self):
+        if not self._needs_sync():
+            log.info("auto_fetch: пропуск — синхронизация была меньше 24 часов назад")
+            self._update_splash("Готово", 100)
+            QTimer.singleShot(0, self._on_init_finished)
+            return
+
+        self._update_splash("Загрузка писем из Outlook...", 90)
+
+        import threading
+
+        def _worker():
+            try:
+                from core.email_service import collect_emails
+                result = collect_emails(days_back=None)
+                log.info(
+                    f"auto_fetch: fetched={result.get('fetched')}, "
+                    f"saved={result.get('saved')}, "
+                    f"duplicates={result.get('duplicates')}, "
+                    f"failed={result.get('failed')}"
+                )
+                if result.get("success"):
+                    self._mark_sync_done()
+            except Exception:
+                log.exception("auto_fetch: ошибка сбора писем")
+            finally:
+                try:
+                    self._status_call.emit("Готов")
+                    QTimer.singleShot(0, self._on_init_finished)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_init_finished(self):
+        self._update_splash("Готово", 100)
+        try:
+            self.ready.emit()
+        except Exception:
+            pass
+
+    def _update_splash(self, text, progress):
+        if self._splash is None:
+            return
+        try:
+            self._splash.set_status(text)
+            self._splash.set_progress(progress)
+            QApplication.processEvents()
+        except Exception:
+            pass
+
+    def _on_status_from_bg(self, text):
+        try:
+            self.set_status(text)
+        except Exception:
+            pass
+
     def get_gm_data(self):
         try:
             return self.data_manager.get_gm_data()
@@ -109,9 +246,6 @@ class AuditApp(QMainWindow):
             log.warning(f"get_active_inventory: {e}")
             return None
 
-    # =========================================================
-    # UI
-    # =========================================================
     def _setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
@@ -123,54 +257,56 @@ class AuditApp(QMainWindow):
         # --- Сайдбар ---
         self.sidebar = QFrame()
         self.sidebar.setObjectName("Sidebar")
-        self.sidebar.setFixedWidth(260)
+        self.sidebar.setFixedWidth(SIDEBAR_WIDTH_COLLAPSED)
+        self.sidebar.setMouseTracking(True)
+
         sidebar_layout = QVBoxLayout(self.sidebar)
-        sidebar_layout.setContentsMargins(20, 0, 20, 0)
+        sidebar_layout.setContentsMargins(6, 10, 6, 10)
         sidebar_layout.setSpacing(6)
 
-        logo = QLabel("CORE")
-        logo.setObjectName("Logo")
-        logo.setFont(self.FONTS['title'])
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sidebar_layout.addWidget(logo)
-
-        # Кнопки с SVG-иконками
         buttons = [
             ("home", "Главная"),
             ("inventory", "Инвентаризация"),
             ("utils", "Утилиты"),
-            ("printers", "Принтеры"),
-            ("gm", "Сетевые папки"),
-            ("external-link", "АСУС"),
+            ("terminal", "Терминал"),
+            ("globe", "АСУС"),           # <-- ИЗМЕНЕНО: "Web" -> "АСУС"
+            ("dashboard", "Дашборд"),
+            ("ai", "AI"),
             ("archive", "Архив"),
+            ("timesheet", "Табель"),
             ("info", "Информация"),
         ]
 
         for key, label_text in buttons:
-            tab_name = "asus" if key == "external-link" else key
+            tab_name = "web" if key == "globe" else key
+            icon_name = "chart" if key == "dashboard" else key
 
-            btn = QPushButton(f"  {label_text}")
+            btn = QPushButton("")
             btn.setObjectName("SidebarBtn")
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setProperty("active", "false")
-            btn.setMinimumHeight(42)
-            btn.clicked.connect(lambda checked=False, k=tab_name: self.show_tab(k))
+            btn.setProperty("collapsed", "true")
+            btn.setProperty("full_label", label_text)
+            btn.setMinimumHeight(44)
+            
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-            icon = get_icon(key, size=22)
+            icon_lbl = QLabel(btn)
+            icon_lbl.setFixedSize(ICON_SIZE, ICON_SIZE)
+            icon_lbl.move(ICON_LEFT_MARGIN + ICON_CENTER_OFFSET, (44 - ICON_SIZE) // 2)
+            icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+            icon = get_icon(icon_name, size=ICON_SIZE)
             if not icon.isNull():
-                btn.setIcon(icon)
-                btn.setIconSize(QSize(22, 22))
+                icon_lbl.setPixmap(icon.pixmap(ICON_SIZE, ICON_SIZE))
+
+            btn.clicked.connect(lambda checked=False, k=tab_name: self.show_tab(k))
 
             sidebar_layout.addWidget(btn)
             self.sidebar_buttons[tab_name] = btn
+            self.sidebar_icons[tab_name] = icon_lbl
 
         sidebar_layout.addStretch()
-
-        credit = QLabel("by Silchenko Aleksey")
-        credit.setObjectName("Credit")
-        credit.setFont(self.FONTS['small'])
-        credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sidebar_layout.addWidget(credit)
 
         main_layout.addWidget(self.sidebar)
 
@@ -186,6 +322,36 @@ class AuditApp(QMainWindow):
         self.status_bar.setObjectName("StatusBar")
         self.status_bar.setFixedHeight(36)
 
+        # === НОВЫЕ КНОПКИ (КАЛЬКУЛЯТОР И БЛОКНОТ) ===
+        self.btn_calc = QPushButton(self.status_bar)
+        self.btn_calc.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_calc.setFixedSize(24, 24)
+        self.btn_calc.setToolTip("Калькулятор")
+        icon_calc = get_icon_simple("calculator", color=self.COLORS.get('text_dim', '#A0A0A0'), size=16)
+        if not icon_calc.isNull():
+            self.btn_calc.setIcon(icon_calc)
+            self.btn_calc.setIconSize(QSize(16, 16))
+        self.btn_calc.setStyleSheet("""
+            QPushButton { background: transparent; border: none; }
+            QPushButton:hover { background-color: #333333; border-radius: 4px; }
+        """)
+        self.btn_calc.clicked.connect(self._open_calculator)
+
+        self.btn_notepad = QPushButton(self.status_bar)
+        self.btn_notepad.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_notepad.setFixedSize(24, 24)
+        self.btn_notepad.setToolTip("Блокнот")
+        icon_notepad = get_icon_simple("notebook", color=self.COLORS.get('text_dim', '#A0A0A0'), size=16)
+        if not icon_notepad.isNull():
+            self.btn_notepad.setIcon(icon_notepad)
+            self.btn_notepad.setIconSize(QSize(16, 16))
+        self.btn_notepad.setStyleSheet("""
+            QPushButton { background: transparent; border: none; }
+            QPushButton:hover { background-color: #333333; border-radius: 4px; }
+        """)
+        self.btn_notepad.clicked.connect(self._open_notepad)
+        # ==================================================
+
         self.status_label = QLabel("Готов")
         self.status_label.setObjectName("StatusText")
         self.status_label.setFont(self.FONTS['small'])
@@ -198,11 +364,11 @@ class AuditApp(QMainWindow):
         self.status_progress.setFixedWidth(200)
         self.status_progress.setStyleSheet(f"""
             QProgressBar {{
-                background-color: {COLORS.get('bg', '#1B1B1B')};
+                background-color: {self.COLORS.get('bg', '#1B1B1B')};
                 border-radius: 4px;
             }}
             QProgressBar::chunk {{
-                background-color: {COLORS.get('success', '#4CAF50')};
+                background-color: {self.COLORS.get('text_dim', '#A0A0A0')};
                 border-radius: 4px;
             }}
         """)
@@ -210,6 +376,11 @@ class AuditApp(QMainWindow):
         status_layout = QHBoxLayout(self.status_bar)
         status_layout.setContentsMargins(12, 0, 12, 0)
         status_layout.setSpacing(12)
+        
+        status_layout.addWidget(self.btn_calc)
+        status_layout.addWidget(self.btn_notepad)
+        status_layout.addSpacing(10)
+        
         status_layout.addWidget(self.status_label)
         status_layout.addStretch()
         status_layout.addWidget(self.status_progress)
@@ -224,31 +395,118 @@ class AuditApp(QMainWindow):
 
         self.show_tab("home")
 
+        QTimer.singleShot(500, self._fix_web_size)
+
+    def _fix_web_size(self):
+        """Принудительно чинит размер WebView2 после инициализации окна."""
+        web_frame = self.frames.get("web")
+        if web_frame and hasattr(web_frame, "refresh_size"):
+            web_frame.refresh_size()
+
+    def _open_calculator(self):
+        from ui.components.calculator_dialog import CalculatorDialog
+        dialog = CalculatorDialog(self, self.COLORS)
+        dialog.exec()
+
+    def _open_notepad(self):
+        from ui.components.notepad_dialog import NotepadDialog
+        dialog = NotepadDialog(self, self.COLORS)
+        dialog.exec()
+
     def _apply_style(self):
-        self.setStyleSheet(build_qss())
+        qss = build_qss(self.COLORS)
+        self.setStyleSheet(qss)
 
-    # =========================================================
-    # ПРЕДЗАГРУЗКА
-    # =========================================================
-    def _preload_frames(self):
-        for name in ("inventory", "archive", "utils"):
-            if name in self.frames and self.frames[name] is not None:
-                continue
-            try:
-                frame = self._create_frame(name)
-                if frame is not None:
-                    self.frames[name] = frame
-                    self.content.addWidget(frame)
-                    log.debug(f"Preloaded frame: {name}")
-            except Exception as e:
-                log.debug(f"Preload {name} failed: {e}")
+    def _setup_sidebar_animation(self):
+        self._sidebar_anim = QPropertyAnimation(self.sidebar, b"minimumWidth")
+        self._sidebar_anim.setDuration(SIDEBAR_ANIM_MS)
+        self._sidebar_anim.setEasingCurve(QEasingCurve.Type.OutQuint)
 
-    # =========================================================
-    # ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК
-    # =========================================================
+        self._sidebar_anim_max = QPropertyAnimation(self.sidebar, b"maximumWidth")
+        self._sidebar_anim_max.setDuration(SIDEBAR_ANIM_MS)
+        self._sidebar_anim_max.setEasingCurve(QEasingCurve.Type.OutQuint)
+
+        self._collapse_timer = QTimer(self)
+        self._collapse_timer.setSingleShot(True)
+        self._collapse_timer.setInterval(SIDEBAR_COLLAPSE_DELAY_MS)
+        self._collapse_timer.timeout.connect(self._collapse_sidebar)
+
+    def _animate_sidebar(self, target_width):
+        self._sidebar_anim.stop()
+        self._sidebar_anim_max.stop()
+
+        current = self.sidebar.width()
+
+        self._sidebar_anim.setStartValue(current)
+        self._sidebar_anim.setEndValue(target_width)
+
+        self._sidebar_anim_max.setStartValue(current)
+        self._sidebar_anim_max.setEndValue(target_width)
+
+        self._sidebar_anim.start()
+        self._sidebar_anim_max.start()
+
+    def _apply_sidebar_state(self, collapsed):
+        self._sidebar_collapsed = collapsed
+
+        for tab_name, btn in self.sidebar_buttons.items():
+            btn.setProperty("collapsed", "true" if collapsed else "false")
+            if collapsed:
+                btn.setText("")
+            else:
+                full_label = btn.property("full_label") or ""
+                btn.setText(full_label)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+
+            icon_lbl = self.sidebar_icons.get(tab_name)
+            if icon_lbl is not None:
+                if collapsed:
+                    x = (44 - ICON_SIZE) // 2 + ICON_CENTER_OFFSET
+                else:
+                    x = ICON_LEFT_MARGIN + ICON_CENTER_OFFSET
+                icon_lbl.move(x, (44 - ICON_SIZE) // 2)
+
+    def _expand_sidebar(self):
+        if self._collapse_timer.isActive():
+            self._collapse_timer.stop()
+
+        if not self._sidebar_collapsed and self.sidebar.width() == SIDEBAR_WIDTH_EXPANDED:
+            return
+
+        self._apply_sidebar_state(collapsed=False)
+        self._animate_sidebar(SIDEBAR_WIDTH_EXPANDED)
+
+    def _collapse_sidebar(self):
+        self._apply_sidebar_state(collapsed=True)
+        self._animate_sidebar(SIDEBAR_WIDTH_COLLAPSED)
+
+    def _install_sidebar_hover(self):
+        self.sidebar.enterEvent = self._on_sidebar_enter
+        self.sidebar.leaveEvent = self._on_sidebar_leave
+
+    def _on_sidebar_enter(self, event):
+        if self.current_tab_name == "web":
+            return
+        self._expand_sidebar()
+
+    def _on_sidebar_leave(self, event):
+        if self.current_tab_name == "web":
+            return
+        self._collapse_timer.start()
+
     def show_tab(self, name):
         if name == self.current_tab_name:
             return
+
+        if self.current_tab_name:
+            old = self.frames.get(self.current_tab_name)
+            if old is not None:
+                try:
+                    if hasattr(old, "on_hide"):
+                        old.on_hide()
+                except Exception as e:
+                    log.warning(f"on_hide для {self.current_tab_name} упал: {e}")
 
         if name not in self.frames:
             try:
@@ -258,11 +516,13 @@ class AuditApp(QMainWindow):
                     return
                 self.frames[name] = frame
                 self.content.addWidget(frame)
+                frame.hide()
             except Exception as e:
                 log.exception(f"Ошибка создания вкладки {name}: {e}")
                 return
 
         frame = self.frames[name]
+        frame.show()
         self.content.setCurrentWidget(frame)
 
         for key, btn in self.sidebar_buttons.items():
@@ -273,19 +533,28 @@ class AuditApp(QMainWindow):
         self.current_tab_name = name
         self.set_status("Готов")
 
+        if name == "web":
+            self._apply_sidebar_state(collapsed=True)
+            self._animate_sidebar(SIDEBAR_WIDTH_COLLAPSED)
+
         try:
             if hasattr(frame, "refresh"):
                 frame.refresh()
         except Exception as e:
             log.warning(f"refresh для {name} упал: {e}")
 
-    # =========================================================
-    # СОЗДАНИЕ ФРЕЙМОВ
-    # =========================================================
     def _create_frame(self, name):
         if name == "home":
             from ui.frames.home_frame import HomeFrame
             return HomeFrame(self, name)
+
+        if name == "dashboard":
+            from ui.frames.dashboard_frame import DashboardFrame
+            return DashboardFrame(self, name)
+
+        if name == "ai":
+            from ui.frames.ai_frame import AIFrame
+            return AIFrame(self, name)
 
         if name == "comments":
             from ui.frames.comments_frame import CommentsFrame
@@ -299,6 +568,10 @@ class AuditApp(QMainWindow):
             from ui.frames.utils_frame import UtilsFrame
             return UtilsFrame(self, name)
 
+        if name == "terminal":
+            from ui.frames.terminal_frame import TerminalFrame
+            return TerminalFrame(self, name)
+
         if name == "printers":
             from ui.frames.printers_frame import PrintersFrame
             return PrintersFrame(self, name)
@@ -307,13 +580,17 @@ class AuditApp(QMainWindow):
             from ui.frames.gm_frame import GmFrame
             return GmFrame(self, name)
 
-        if name == "asus":
-            from ui.frames.asus_frame import AsusFrame
-            return AsusFrame(self, name)
+        if name == "web":
+            from ui.frames.web_frame import WebFrame
+            return WebFrame(self, name)
 
         if name == "archive":
             from ui.frames.archive_frame import ArchiveFrame
             return ArchiveFrame(self, name)
+
+        if name == "timesheet":
+            from ui.frames.timesheet_frame import TimesheetFrame
+            return TimesheetFrame(self, name)
 
         if name == "info":
             from ui.frames.info_frame import InfoFrame
@@ -335,24 +612,24 @@ class AuditApp(QMainWindow):
             from ui.frames.brak_util_frame import BrakUtilFrame
             return BrakUtilFrame(self, name)
 
-        if name == "violations":
-            from ui.frames.violations_frame import ViolationsFrame
-            return ViolationsFrame(self, name)
-
         if name == "distance":
             from ui.frames.distance_frame import DistanceFrame
             return DistanceFrame(self, name)
 
+        if name == "violations":
+            from ui.frames.violations_frame import ViolationsFrame
+            return ViolationsFrame(self, name)
+
+        if name == "tsd":
+            from ui.frames.tsd_frame import TsdFrame
+            return TsdFrame(self, name)
+
         log.warning(f"Неизвестная вкладка: {name}")
         return None
 
-    # =========================================================
-    # ГЕОМЕТРИЯ
-    # =========================================================
     def _restore_geometry(self):
         try:
-            settings = QSettings("SilchenkoAleksey", "CoreV3")
-            geometry = settings.value("geometry")
+            geometry = self._settings.value("geometry")
             if geometry:
                 self.restoreGeometry(geometry)
         except Exception as e:
@@ -360,14 +637,10 @@ class AuditApp(QMainWindow):
 
     def _save_geometry(self):
         try:
-            settings = QSettings("SilchenkoAleksey", "CoreV3")
-            settings.setValue("geometry", self.saveGeometry())
+            self._settings.setValue("geometry", self.saveGeometry())
         except Exception as e:
             log.debug(f"Не удалось сохранить геометрию: {e}")
 
-    # =========================================================
-    # СТАТУС И ПРОГРЕСС
-    # =========================================================
     def set_status(self, text, color=None):
         self.status_label.setText(text)
         if color:
@@ -388,32 +661,48 @@ class AuditApp(QMainWindow):
         if success:
             self.status_progress.setValue(1000)
             if message:
-                self.set_status(message, COLORS.get('success', '#4CAF50'))
+                self.set_status(message, self.COLORS.get('success', '#4CAF50'))
         else:
             self.status_progress.setValue(0)
             if message:
-                self.set_status(message, COLORS.get('error', '#FF5252'))
+                self.set_status(message, self.COLORS.get('error', '#FF5252'))
 
-    # =========================================================
-    # ОТКРЫТИЕ ПАПОК
-    # =========================================================
     def open_folder(self, folder_key):
-        path = FOLDERS.get(folder_key)
+        path = self.FOLDERS.get(folder_key)
         if not path or not os.path.isdir(path):
             log.warning(f"Папка '{folder_key}' не найдена: {path}")
             return
-        try:
-            os.startfile(path)
-        except Exception as e:
-            log.warning(f"Не удалось открыть папку {path}: {e}")
 
-    # =========================================================
-    # ПРОЧЕЕ
-    # =========================================================
-    def _show_config_notice(self):
-        log.info("Config был создан автоматически")
+        try:
+            from ui.components.files_dialog import FilesDialog
+            dialog = FilesDialog(
+                self, folder_key,
+                bg=self.COLORS.get("bg", "#1B1B1B"),
+                card=self.COLORS.get("card", "#222222"),
+                text=self.COLORS.get("text", "#E0E0E0"),
+                button=self.COLORS.get("button", "#D42626"),
+                hover=self.COLORS.get("hover", "#B71C1C"),
+                text_dim=self.COLORS.get("text_dim", "#A0A0A0"),
+                border=self.COLORS.get("border", "#333333"),
+            )
+            dialog.exec()
+        except Exception as e:
+            log.exception(f"Не удалось открыть FilesDialog: {e}")
+            try:
+                os.startfile(path)
+            except Exception as e2:
+                log.warning(f"Не удалось открыть папку {path}: {e2}")
 
     def closeEvent(self, event):
+        for name, frame in self.frames.items():
+            if frame is None:
+                continue
+            try:
+                if hasattr(frame, "on_close"):
+                    frame.on_close()
+            except Exception as e:
+                log.warning(f"on_close для {name} упал: {e}")
+
         self._save_geometry()
         try:
             self.data_manager.shutdown()

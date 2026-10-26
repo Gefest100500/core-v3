@@ -4,6 +4,12 @@
 
 Использует Nominatim (OpenStreetMap) для получения координат.
 Кэш хранится в data/gm_cities_cache.json.
+
+ИЗМЕНЕНИЯ:
+- find_store_by_text: добавлена защита от пустой строки.
+  Раньше пустой text_lower ("") давал совпадение с любым названием
+  ("" in name всегда True), и функция возвращала первый магазин.
+  Теперь пустой запрос возвращает None.
 """
 import json
 import os
@@ -147,8 +153,19 @@ def get_stores_by_city(stores_data):
 
 def find_store_by_text(text, stores_data):
     """Ищет магазин по строке (точное или частичное совпадение).
-    Возвращает dict магазина или None."""
+    Возвращает dict магазина или None.
+
+    ИЗМЕНЕНИЯ:
+    - Добавлена защита от пустой строки: если text после strip() пустой,
+      возвращается None. Раньше пустая строка совпадала с любым
+      названием ("" in name всегда True) и функция возвращала
+      первый магазин из списка.
+    """
     text_lower = text.strip().lower()
+
+    # Защита от пустой строки
+    if not text_lower:
+        return None
 
     # Точное совпадение названия
     for store in stores_data:

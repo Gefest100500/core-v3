@@ -1,55 +1,71 @@
 # core/violations_analyzer.py
 """
-Анализатор Нарушений — каркас.
+Трассировщик правил (Анализатор нарушений).
 
-Пока:
-1. Читает шаблон
-2. Копирует его в Готовые/Нарушения/ как .xlsx
-3. Заменяет ФИО ревизоров (заготовка)
-4. Правила будут добавлены позже
+Вход: файл со списком кодов + РТП.
+Применяет УПРОЩЁННЫЕ правила (без Пересорта, Хищения и Местного поставщика).
 
 ИЗМЕНЕНИЯ:
-- Эмодзи из report() убраны
-- Убран неиспользуемый импорт shutil
+- Сбор операций «Инвентаризация» теперь возвращает список:
+  [(дата, количество), ...] для каждой конкретной инвентаризации.
 """
 import os
-from datetime import datetime
+import json
 
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
 
-from config import FOLDERS
 from utils.logger import log
+from utils.parsing import find_column_ci
 
 
-# --- Названия столбцов в шаблоне нарушений ---
-COL_DISTRICT = "Округ"                    # A
-COL_GM_CODE = "Код ГМ"                    # B
-COL_GM_NAME = "Название ГМ"               # C
-COL_CHECK_DATE = "Дата проверки"          # D
-COL_REVIEWER = "ФИО ревизора"             # E
-COL_SECTION = "Раздел"                    # F
-COL_CRITERION = "Критерий проверки"       # G
-COL_SUM = "Сумма выявленного нарушения (при возможности оценить ущерб)"  # H
-COL_DETAILS = "Подробно (о выявленном нарушении)"                        # I
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+KV_RULES_PATH = os.path.join(DATA_DIR, "kv_rules.json")
+
+
+DEFAULT_RULES = {
+    "box_deviation_pct": 50,
+    "mirror_deviation_pct": 25,
+    "operation_types": {
+        "nevoz": ["Приход•Недовоз внутри компании"],
+        "perevoz": [
+            "Приход•Перевоз внутри компании",
+            "Приход•Неподтверждённый перевоз",
+        ],
+        "inventory_prefix": "Инвентаризация",
+    },
+    "values": {"surplus": "Излишек", "deficit": "Недостача"},
+    "reasons": {
+        "box_surplus": "Коробочный излишек - обычная приемка",
+        "box_shortage": "Коробочный недовоз - обычная приемка",
+        "mirror": "Нет потерь,  выявлено зеркальное отклонение",
+    },
+}
+
+
+def _load_rules():
+    if not os.path.exists(KV_RULES_PATH):
+        return DEFAULT_RULES
+    try:
+        with open(KV_RULES_PATH, "r", encoding="utf-8") as f:
+            rules = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return DEFAULT_RULES
+    for key, value in DEFAULT_RULES.items():
+        if key not in rules:
+            rules[key] = value
+    return rules
 
 
 class ViolationsAnalyzer:
     def __init__(self):
-        log.info("Инициализация Анализатора Нарушений")
+        self.rules = _load_rules()
 
-    def run(self, rtp_path, template_path, reviewer1, reviewer2,
-            progress_callback=None):
-        """
-        rtp_path      — путь к РТП.xlsx
-        template_path — путь к шаблону «Нарушения БП.xls»
-        reviewer1     — ФИО первого ревизора
-        reviewer2     — ФИО второго ревизора
-
-        Пока — только каркас.
-        """
-
+    # =========================================================
+    # ЗАПУСК
+    # =========================================================
+    def run(self, codes_path, rtp_path, progress_callback=None):
         def report(value, message=None):
             if progress_callback:
                 try:
@@ -57,114 +73,190 @@ class ViolationsAnalyzer:
                 except Exception:
                     pass
 
-        # --- 1. Проверка входных файлов (5%) ---
-        report(0.05, "Проверка файлов...")
+        r = self.rules
+        val = r["values"]
+        reasons = r["reasons"]
 
+        # --- 1. Проверка (5%) ---
+        report(0.05, "Проверка файлов...")
+        if not os.path.isfile(codes_path):
+            raise RuntimeError(f"Файл с кодами не найден:\n{codes_path}")
         if not os.path.isfile(rtp_path):
             raise RuntimeError(f"Файл РТП не найден:\n{rtp_path}")
-        if not os.path.isfile(template_path):
-            raise RuntimeError(f"Файл шаблона не найден:\n{template_path}")
 
-        # --- 2. Чтение РТП (15%) ---
-        report(0.15, "Чтение РТП.xlsx...")
-        try:
-            df_rtp = pd.read_excel(rtp_path)
-            log.info(f"РТП: {len(df_rtp)} строк, столбцы: {list(df_rtp.columns)}")
-        except Exception as e:
-            raise RuntimeError(f"Не удалось прочитать РТП:\n{e}")
-
-        # --- 3. Чтение шаблона (30%) ---
-        report(0.30, "Чтение шаблона нарушений...")
-        try:
-            df_tmpl = pd.read_excel(template_path)
-            log.info(f"Шаблон: {len(df_tmpl)} строк, столбцы: {list(df_tmpl.columns)}")
-        except Exception as e:
+        # --- 2. Чтение кодов (10%) ---
+        report(0.10, "Чтение кодов...")
+        df_codes = pd.read_excel(codes_path)
+        
+        code_col_codes = find_column_ci(df_codes, "Код товара")
+        if code_col_codes is None:
+            code_col_codes = find_column_ci(df_codes, "Код ТП")
+        if code_col_codes is None:
             raise RuntimeError(
-                f"Не удалось прочитать шаблон:\n{e}\n\n"
-                f"Если файл .xls — установите xlrd: pip install xlrd"
+                f"В файле с кодами нет столбца «Код товара» или «Код ТП».\n"
+                f"Столбцы: {list(df_codes.columns)}"
             )
 
-        # --- 4. TODO: правила (здесь будут правила перевозов / недовозов) ---
-        report(0.50, "Правила будут добавлены позже...")
+        codes_set = set(
+            str(x).strip() for x in df_codes[code_col_codes].dropna().tolist()
+            if str(x).strip()
+        )
+        log.info(f"Кодов загружено: {len(codes_set)}")
 
-        # --- 5. Замена ФИО ревизоров (70%) ---
-        report(0.70, "Замена ФИО ревизоров...")
-        if COL_REVIEWER in df_tmpl.columns:
-            df_tmpl[COL_REVIEWER] = df_tmpl[COL_REVIEWER].astype(object)
-            log.info(f"Ревизор 1: {reviewer1}")
-            log.info(f"Ревизор 2: {reviewer2}")
+        # --- 3. Чтение РТП (20%) ---
+        report(0.20, "Чтение РТП...")
+        df = pd.read_excel(rtp_path)
+        
+        code_col = find_column_ci(df, "Код товара") or find_column_ci(df, "Код ТП")
+        qty_col = find_column_ci(df, "Количество")
+        op_col = find_column_ci(df, "Название типа операции")
+        date_col = find_column_ci(df, "Дата операции")
+        
+        name_col = find_column_ci(df, "Название")
+        if name_col is None:
+            name_col = find_column_ci(df, "Наименование ТП")
+            
+        gr20_col = find_column_ci(df, "GR20")
+        if gr20_col is None:
+            gr20_col = find_column_ci(df, "ГР20")
+        if gr20_col is None:
+            gr20_col = find_column_ci(df, "ГР 20")
 
-        # --- 6. Сохранение (85%) ---
-        report(0.85, "Сохранение результата...")
-        out_dir = FOLDERS["violations"]
-        os.makedirs(out_dir, exist_ok=True)
+        if not all([code_col, qty_col, op_col]):
+            raise RuntimeError(
+                f"В РТП нет нужных столбцов (Код, Количество, Операция).\n"
+                f"Столбцы: {list(df.columns)}"
+            )
 
-        date_str = datetime.now().strftime("%d.%m.%Y")
-        out_name = f"Нарушения БП {date_str}.xlsx"
-        out_path = os.path.join(out_dir, out_name)
+        df["_code_str"] = df[code_col].astype(str).str.strip()
+        df[qty_col] = pd.to_numeric(df[qty_col], errors="coerce").fillna(0)
 
-        try:
-            df_tmpl.to_excel(out_path, index=False)
-        except Exception as e:
-            raise RuntimeError(f"Не удалось сохранить результат:\n{e}")
+        # Фильтруем РТП по кодам из списка
+        df_f = df[df["_code_str"].isin(codes_set)].copy()
+        
+        if len(df_f) == 0:
+            report(1.0, "Нет строк по выбранным кодам в РТП")
+            return {"success": True, "rows": [], "total_rtp_rows": len(df)}
 
-        # --- 7. Автоподбор ширины колонок (95%) ---
-        report(0.95, "Подгонка ширины колонок...")
-        self._autofit_columns(out_path)
+        # --- 4. Считаем данные (30%) ---
+        report(0.30, "Группировка по коду ТП...")
 
-        # --- 8. Готово (100%) ---
-        report(1.0, "Анализ завершён")
-        log.info(f"Анализ нарушений завершён. Файл: {out_path}")
+        first_rows = df_f.groupby("_code_str", sort=False).first()
+        
+        nev = df_f[df_f[op_col].isin(r["operation_types"]["nevoz"])]
+        nev_sum = nev.groupby("_code_str")[qty_col].sum().abs()
 
+        per = df_f[df_f[op_col].isin(r["operation_types"]["perevoz"])]
+        per_sum = per.groupby("_code_str")[qty_col].sum().abs()
+
+        inv_prefix = r["operation_types"]["inventory_prefix"]
+        inv = df_f[df_f[op_col].astype(str).str.startswith(inv_prefix, na=False)]
+        inv_sum = inv.groupby("_code_str")[qty_col].sum().abs()
+
+        # Сбор детальной информации по инвентаризации (дата + кол-во)
+        inv_details = {}
+        if date_col:
+            # Группируем по коду и дате, суммируем количество
+            inv_grouped = inv.groupby(["_code_str", date_col])[qty_col].sum().reset_index()
+            for code in first_rows.index:
+                code_inv = inv_grouped[inv_grouped["_code_str"] == code]
+                details = []
+                for _, row_inv in code_inv.iterrows():
+                    d_str = str(row_inv[date_col]).strip()
+                    q_val = row_inv[qty_col]
+                    details.append((d_str, q_val))
+                if details:
+                    inv_details[code] = details
+        else:
+            # Если даты нет, просто суммируем (fallback)
+            for code in first_rows.index:
+                code_inv = inv[inv["_code_str"] == code]
+                if len(code_inv) > 0:
+                    inv_details[code] = [("—", code_inv[qty_col].sum())]
+
+        plus = df_f[df_f[qty_col] > 0].groupby("_code_str")[qty_col].sum()
+        minus = df_f[df_f[qty_col] < 0].groupby("_code_str")[qty_col].sum().abs()
+
+        total_qty = df_f.groupby("_code_str")[qty_col].sum()
+
+        # --- 5. Применяем правила (50%) ---
+        report(0.50, "Применение правил...")
+
+        results = []
+        box_pct = r["box_deviation_pct"]
+        mirror_pct = r["mirror_deviation_pct"]
+
+        for code in first_rows.index:
+            name = first_rows.at[code, name_col] if name_col else ""
+            gr20 = first_rows.at[code, gr20_col] if gr20_col else ""
+            
+            qty = total_qty.get(code, 0)
+            
+            sign = ""
+            if qty < 0:
+                sign = val["surplus"]
+            elif qty > 0:
+                sign = val["deficit"]
+
+            reason = ""
+            features = {}
+
+            # 1. Зеркалка
+            if code in plus.index and code in minus.index:
+                p = plus[code]
+                m = minus[code]
+                if p > 0 and m > 0:
+                    dev = abs(p - m) * 100 / max(p, m)
+                    if dev <= mirror_pct:
+                        reason = reasons["mirror"]
+                        features = {"rule": "mirror", "deviation": f"{dev:.1f}%"}
+
+            # 2. Коробочный (недовоз/перевоз)
+            if not reason:
+                if code in per_sum.index and code in inv_sum.index:
+                    s = per_sum[code]
+                    i = inv_sum[code]
+                    if s > 0 and i > 0:
+                        dev = abs(s - i) * 100 / max(s, i)
+                        if dev <= box_pct and sign == val["deficit"]:
+                            reason = reasons["box_shortage"]
+                            features = {"rule": "box_shortage", "deviation": f"{dev:.1f}%"}
+                
+                if not reason and code in nev_sum.index and code in inv_sum.index:
+                    s = nev_sum[code]
+                    i = inv_sum[code]
+                    if s > 0 and i > 0:
+                        dev = abs(s - i) * 100 / max(s, i)
+                        if dev <= box_pct and sign == val["surplus"]:
+                            reason = reasons["box_surplus"]
+                            features = {"rule": "box_surplus", "deviation": f"{dev:.1f}%"}
+
+            # 3. Обычная приемка (финальное правило)
+            if not reason and sign:
+                if sign == val["deficit"]:
+                    reason = reasons["box_shortage"]
+                    features = {"rule": "fallback", "reason": "Правила молчат (Недостача)"}
+                elif sign == val["surplus"]:
+                    reason = reasons["box_surplus"]
+                    features = {"rule": "fallback", "reason": "Правила молчат (Излишек)"}
+
+            if reason:
+                # Добавляем детали инвентаризации
+                inv_data = inv_details.get(code, [])
+                
+                results.append({
+                    "code": code,
+                    "name": str(name),
+                    "gr20": str(gr20),
+                    "sign": sign,
+                    "reason": reason,
+                    "features": features,
+                    "inv_details": inv_data
+                })
+
+        report(1.0, f"Найдено: {len(results)}")
         return {
             "success": True,
-            "file": out_path,
-            "rtp_rows": len(df_rtp),
-            "template_rows": len(df_tmpl),
+            "rows": results,
+            "total_rtp_rows": len(df),
         }
-
-    # =========================================================
-    # ВСПОМОГАТЕЛЬНЫЕ
-    # =========================================================
-    @staticmethod
-    def _autofit_columns(file_path, min_width=8, max_width=60):
-        """Подгоняет ширину каждой колонки под самый длинный текст в ней."""
-        try:
-            wb = load_workbook(file_path)
-        except Exception as e:
-            log.warning(f"Не удалось открыть файл для автоподбора ширины: {e}")
-            return
-
-        ws = wb.active
-
-        for col_cells in ws.iter_cols():
-            col_letter = None
-            max_len = 0
-
-            for cell in col_cells:
-                if col_letter is None:
-                    col_letter = get_column_letter(cell.column)
-
-                val = cell.value
-                if val is None:
-                    continue
-
-                text = str(val)
-                lines = text.split("\n")
-                line_len = max(len(line) for line in lines) if lines else 0
-
-                if line_len > max_len:
-                    max_len = line_len
-
-            if col_letter is None:
-                continue
-
-            width = max(min_width, min(max_len + 2, max_width))
-            ws.column_dimensions[col_letter].width = width
-
-        try:
-            wb.save(file_path)
-        except PermissionError:
-            log.warning(
-                f"Файл {file_path} занят — не удалось сохранить ширину колонок."
-            )

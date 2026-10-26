@@ -2,23 +2,16 @@
 """
 QSS-стили для Core V3.0.
 
-Единый шаблон тёмной темы. Все цвета подставляются из COLORS
-(config.json → colors) через плейсхолдеры вида %bg%, %text% и т.д.
-
-Использование:
-    from ui.styles import build_qss
-    self.setStyleSheet(build_qss())
-
-Когда будем красить под MAGNIT TECH — правим только этот файл
-и/или config.json, а не app.py.
+ИЗМЕНЕНИЯ:
+- Добавлены глобальные правила для QProgressBar (серый).
+- Убраны жёсткие padding у QLabel (чтобы не влиять на статусы).
+- Для QLabel#StatusNeutral (серый текст) добавлено отдельное правило.
 """
 
 
 # =========================================================
 # ШАБЛОН QSS
 # =========================================================
-# Плейсхолдеры %name% заменяются значениями из COLORS.
-# Список ключей COLORS смотри в config.py → DEFAULT_CONFIG["colors"].
 QSS_TEMPLATE = """
 QMainWindow, QWidget {
     background-color: %bg%;
@@ -70,12 +63,16 @@ QLabel#Logo {
     background-color: transparent;
 }
 
+/* =========================================================
+   Кнопки сайдбара
+   ========================================================= */
 QPushButton#SidebarBtn {
     background-color: transparent;
     color: %text%;
     border: 1px solid %border%;
     border-radius: 8px;
     padding: 10px 14px;
+    padding-left: 50px;
     text-align: left;
     font-size: 13px;
 }
@@ -83,12 +80,19 @@ QPushButton#SidebarBtn {
 QPushButton#SidebarBtn:hover {
     background-color: %hover%;
     border-color: %hover%;
+    color: white;
 }
 
 QPushButton#SidebarBtn[active="true"] {
     background-color: %button%;
     border-color: %button%;
     color: white;
+}
+
+QPushButton#SidebarBtn[collapsed="true"] {
+    text-align: center;
+    padding: 0px;
+    border: none;
 }
 
 QFrame#StatusBar {
@@ -143,7 +147,156 @@ QPushButton:disabled {
 }
 
 /* =========================================================
-   QDateEdit — поле даты с выпадающим календарём
+   Глобальный QProgressBar — серый, единый стиль
+   ========================================================= */
+QProgressBar {
+    background-color: %sidebar%;
+    border: none;
+    border-radius: 4px;
+    text-align: center;
+    color: %text%;
+    font-size: 11px;
+}
+
+QProgressBar::chunk {
+    background-color: %text_dim%;
+    border-radius: 4px;
+}
+
+/* =========================================================
+   Статусные метки (если используются)
+   ========================================================= */
+QLabel#StatusNeutral {
+    color: %text_dim%;
+    background: transparent;
+}
+
+QLabel#StatusSuccess {
+    color: %text_dim%; /* серый, а не зелёный */
+    background: transparent;
+}
+
+QLabel#StatusError {
+    color: %error%;
+    background: transparent;
+}
+
+/* =========================================================
+   QComboBox
+   ========================================================= */
+QComboBox {
+    background-color: %sidebar%;
+    color: %text%;
+    border: 1px solid %border%;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 14px;
+    min-height: 20px;
+}
+
+QComboBox:hover {
+    border: 1px solid %text_dim%;
+}
+
+QComboBox:focus {
+    border: 1px solid %button%;
+}
+
+QComboBox:disabled {
+    background-color: #2A2A2A;
+    color: #666666;
+    border: 1px solid #333333;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border: none;
+    background: transparent;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid %text_dim%;
+    width: 0;
+    height: 0;
+    margin-right: 6px;
+}
+
+QComboBox::down-arrow:hover {
+    border-top: 5px solid %text%;
+}
+
+QComboBox QAbstractItemView {
+    background-color: %card%;
+    color: %text%;
+    border: 1px solid %border%;
+    border-radius: 6px;
+    padding: 4px;
+    outline: none;
+    selection-background-color: %button%;
+    selection-color: white;
+}
+
+QComboBox QAbstractItemView::item {
+    background-color: %card%;
+    color: %text%;
+    padding: 6px 10px;
+    border-radius: 4px;
+    min-height: 22px;
+}
+
+QComboBox QAbstractItemView::item:hover {
+    background-color: %hover%;
+    color: white;
+}
+
+QComboBox QAbstractItemView::item:selected {
+    background-color: %button%;
+    color: white;
+}
+
+/* =========================================================
+   QCompleter
+   ========================================================= */
+QCompleter QAbstractItemView,
+QListView {
+    background-color: %card%;
+    color: %text%;
+    border: 1px solid %border%;
+    border-radius: 6px;
+    padding: 4px;
+    outline: none;
+    selection-background-color: %button%;
+    selection-color: white;
+}
+
+QCompleter QAbstractItemView::item,
+QListView::item {
+    background-color: %card%;
+    color: %text%;
+    padding: 6px 10px;
+    border-radius: 4px;
+    min-height: 22px;
+}
+
+QCompleter QAbstractItemView::item:hover,
+QListView::item:hover {
+    background-color: %hover%;
+    color: white;
+}
+
+QCompleter QAbstractItemView::item:selected,
+QListView::item:selected {
+    background-color: %button%;
+    color: white;
+}
+
+/* =========================================================
+   QDateEdit
    ========================================================= */
 QDateEdit {
     background-color: %sidebar%;
@@ -179,7 +332,7 @@ QDateEdit::down-arrow {
 }
 
 /* =========================================================
-   QCalendarWidget — выпадающий календарь (popup у QDateEdit)
+   QCalendarWidget
    ========================================================= */
 QCalendarWidget QWidget {
     background-color: %card%;
@@ -245,14 +398,7 @@ QCalendarWidget QWidget#qt_calendar_calendarview {
 # СБОРКА QSS С ПОДСТАНОВКОЙ ЦВЕТОВ
 # =========================================================
 def build_qss(colors=None):
-    """Собирает QSS из шаблона, подставляя цвета.
-
-    Args:
-        colors: словарь цветов. Если None — берётся из config.COLORS.
-
-    Returns:
-        Готовая строка QSS.
-    """
+    """Собирает QSS из шаблона, подставляя цвета."""
     if colors is None:
         from config import COLORS as colors
 

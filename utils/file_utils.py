@@ -2,20 +2,44 @@
 """
 Утилиты для работы с файлами и папками.
 
-Определяет базовые директории проекта (base, data, logs, input, output, temp).
+Единая точка правды для базовых директорий проекта:
+- get_base_dir()      — корень проекта (или папка рядом с .exe)
+- get_data_dir()      — %LOCALAPPDATA%/Core_V3_0/data (fallback: data/)
+- get_logs_dir()      — Logs/ (fallback, если LOCALAPPDATA недоступна)
+- get_input_dir()     — Файлы/
+- get_generated_dir() — Готовые/
+- get_temp_dir()      — temp/
+
 Работает и как скрипт, и как .exe (PyInstaller).
+
+ИЗМЕНЕНИЯ:
+- get_output_dir() переименован в get_generated_dir() — но старый
+  алиас оставлен для совместимости.
+- clear_folder теперь логирует: сколько удалено, сколько не удалось.
+  Раньше ошибки доступа тихо игнорировались.
+- get_data_dir() теперь возвращает %LOCALAPPDATA%/Core_V3_0/data
+  (fallback: <корень проекта>/data). Данные ревизора не теряются
+  при установке в Program Files.
 """
 import sys
 import os
-from pathlib import Path
 import shutil
+from pathlib import Path
+
+from utils.logger import log
 
 
-def get_base_dir():
-    """Возвращает базовую директорию.
+# =========================================================
+# БАЗОВАЯ ДИРЕКТОРИЯ
+# =========================================================
+def get_base_dir() -> str:
+    """Возвращает базовую директорию проекта.
 
     - Если запущено как .exe (PyInstaller) — папка рядом с .exe
     - Если обычный скрипт — корень проекта (где main.py)
+
+    ВАЖНО: это ЕДИНСТВЕННАЯ точка правды. Все остальные модули
+    должны использовать эту функцию, а не считать BASE_DIR сами.
     """
     if getattr(sys, "frozen", False):
         # .exe — папка рядом с Core.exe
@@ -25,56 +49,137 @@ def get_base_dir():
         return str(Path(__file__).resolve().parent.parent)
 
 
-def get_data_dir():
-    """Папка для JSON-данных (data/). Создаётся при первом вызове."""
-    path = os.path.join(get_base_dir(), "data")
+# =========================================================
+# ПАПКА ДАННЫХ (%LOCALAPPDATA%)
+# =========================================================
+def get_app_data_root() -> str:
+    """Возвращает корень данных приложения.
+
+    Приоритет:
+    1. %LOCALAPPDATA%/Core_V3_0 — стандартное место (есть права на запись)
+    2. <корень проекта> — fallback, если LOCALAPPDATA недоступна
+
+    Папка НЕ создаётся здесь — это делает get_data_dir().
+    """
+    try:
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata and os.path.isdir(local_appdata):
+            return os.path.join(local_appdata, "Core_V3_0")
+    except (OSError, PermissionError):
+        pass
+
+    return get_base_dir()
+
+
+def get_data_dir() -> str:
+    """Папка для JSON-данных. Создаётся при первом вызове.
+
+    Основное место: %LOCALAPPDATA%/Core_V3_0/data
+    Fallback: <корень проекта>/data
+    """
+    path = os.path.join(get_app_data_root(), "data")
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def get_logs_dir():
-    """Папка для логов (Logs/). Создаётся при первом вызове."""
+# =========================================================
+# СТАНДАРТНЫЕ ПАПКИ
+# =========================================================
+def get_logs_dir() -> str:
+    """Папка для логов (Logs/). Создаётся при первом вызове.
+
+    ВАЖНО: основная логика логов — в utils/logger.py, которая
+    пишет в %LOCALAPPDATA%/Core/Logs. Эта функция — fallback,
+    если LOCALAPPDATA недоступна.
+    """
     path = os.path.join(get_base_dir(), "Logs")
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def get_input_dir():
+def get_input_dir() -> str:
     """Папка входных файлов (Файлы/). Создаётся при первом вызове."""
     path = os.path.join(get_base_dir(), "Файлы")
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def get_output_dir():
-    """Папка результатов (Готовые/). Создаётся при первом вызове."""
+def get_generated_dir() -> str:
+    """Папка результатов (Готовые/). Создаётся при первом вызове.
+
+    Основная папка для всех результатов анализа.
+    """
     path = os.path.join(get_base_dir(), "Готовые")
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def get_temp_dir():
+def get_output_dir() -> str:
+    """Алиас для get_generated_dir() — для совместимости."""
+    return get_generated_dir()
+
+
+def get_temp_dir() -> str:
     """Папка временных файлов (temp/). Создаётся при первом вызове."""
     path = os.path.join(get_base_dir(), "temp")
     os.makedirs(path, exist_ok=True)
     return path
 
 
+# =========================================================
+# ОЧИСТКА ПАПКИ
+# =========================================================
 def clear_folder(folder_path):
-    """Очищает папку. Молча игнорирует ошибки доступа."""
+    """Очищает папку.
+
+    Возвращает:
+        (removed, failed) — сколько удалено, сколько не удалось.
+
+    Логирует результат:
+    - если всё удалено — debug
+    - если что-то не удалось — warning с количеством
+    - если папки нет — debug
+    """
     if not os.path.isdir(folder_path):
-        return
-    for entry in os.listdir(folder_path):
+        log.debug(f"clear_folder: папки нет — {folder_path}")
+        return (0, 0)
+
+    removed = 0
+    failed = 0
+
+    try:
+        entries = os.listdir(folder_path)
+    except (OSError, PermissionError) as e:
+        log.warning(f"clear_folder: не удалось прочитать {folder_path}: {e}")
+        return (0, 0)
+
+    for entry in entries:
         full_path = os.path.join(folder_path, entry)
         try:
             if os.path.isfile(full_path) or os.path.islink(full_path):
                 os.remove(full_path)
+                removed += 1
             elif os.path.isdir(full_path):
                 shutil.rmtree(full_path)
-        except (OSError, PermissionError):
-            pass
+                removed += 1
+        except (OSError, PermissionError) as e:
+            failed += 1
+            log.debug(f"clear_folder: не удалось удалить {full_path}: {e}")
+
+    if failed:
+        log.warning(
+            f"clear_folder: {folder_path} — удалено {removed}, "
+            f"не удалось {failed}"
+        )
+    else:
+        log.debug(f"clear_folder: {folder_path} — удалено {removed}")
+
+    return (removed, failed)
 
 
+# =========================================================
+# СТИЛИЗАЦИЯ EXCEL
+# =========================================================
 def style_excel(file_path, header_row=1, start_col=1, end_col=None):
     """Применяет стиль к заголовкам Excel-файла.
 
