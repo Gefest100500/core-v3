@@ -2,9 +2,34 @@
 """
 Сетевые папки ГМ.
 
+- Поиск ГМ по коду или названию (с автокомплитом)
+- Создание папки ПИ ГМ {Название} {ДД.ММ.ГГГГ} в сетевой папке
+- Создание 5 подпапок внутри (1-4 сутки + Итоговые)
+- Создание ярлыка на рабочем столе
+
+Улучшения по сравнению с CTk-версией:
+- QCompleter вместо ручного поиска
+- win32com.client для создания ярлыков (быстрее PowerShell)
+- Fallback на PowerShell, если win32com не сработал
+- Двойной клик по результату — сразу создать ярлык
+- Запоминание последнего запроса (QSettings)
+
+Правки стиля:
+- Убраны все эмодзи
+- Кнопки — SVG-иконки
+
 ИЗМЕНЕНИЯ:
-- Добавлена кнопка «Назад» (возврат в меню «Утилиты»).
-- Плейсхолдеры приведены к единому виду (с большой буквы).
+- GM_DATA_PATH берётся из utils.file_utils — единая точка правды.
+  Раньше путь считался через тройной os.path.dirname(...).
+- Добавлена кнопка «Назад в утилиты».
+- Плейсхолдер приведён к единому виду (как в terminal_frame.py).
+- Автокомплит подключён в __init__ по образцу terminal_frame.py:
+  попап показывается по textEdited, стиль через style_popup.
+- Убран повторный вызов _attach_completer из search():
+  completer создаётся только один раз в __init__, чтобы не пересоздавать
+  объект, который держит поле ввода (это вызывало краш при клике на строку).
+- В _on_activated из выбранной строки извлекается только код (до " — "),
+  чтобы поиск находил ГМ по коду, а не по строке "код — название".
 """
 import os
 import json
@@ -22,7 +47,7 @@ from utils.file_utils import get_base_dir
 from ui.frames.base_frame import BaseFrame
 from ui.components.widgets import (
     create_card, StyledEntry, PrimaryButton, SecondaryButton,
-    style_popup, AnimatedPlaceholderEntry,
+    style_popup,
 )
 from ui.icons import get_icon_simple
 from utils.logger import log
@@ -48,12 +73,14 @@ class GmFrame(BaseFrame):
 
         self._settings = QSettings("SilchenkoAleksey", "CoreV3")
 
-        self._setup_ui()
+        self._gm_completer = None
+        self._gm_model = None
 
-        # Автодополнение ГМ сразу при старте вкладки
-        gm_data = self._load_gm_data()
-        if gm_data:
-            self._attach_completer(gm_data)
+        self._setup_ui()
+        self._restore_last_query()
+
+        gm_data = self._load_gm_data(show_errors=False)
+        self._attach_completer(gm_data or [])
 
     # =========================================================
     # UI
@@ -63,30 +90,31 @@ class GmFrame(BaseFrame):
         root_layout.setContentsMargins(20, 20, 20, 20)
         root_layout.setSpacing(12)
 
-        # --- Кнопка "Назад" ---
-        back_row = QHBoxLayout()
-        back_btn = SecondaryButton(
-            "← Назад",
-            on_click=self._go_back,
+        # Кнопка «Назад в утилиты»
+        top = QHBoxLayout()
+        btn_back = SecondaryButton(
+            "Назад в утилиты",
+            on_click=lambda: self.app.show_tab("utils"),
             parent=self
         )
-        back_btn.setMinimumWidth(120)
-        back_btn.setMinimumHeight(36)
-        back_row.addWidget(back_btn)
-        back_row.addStretch()
-        root_layout.addLayout(back_row)
+        btn_back.setMinimumWidth(180)
+        top.addWidget(btn_back)
+        top.addStretch()
+        root_layout.addLayout(top)
 
+        # Заголовок (без эмодзи)
         title = QLabel("СЕТЕВЫЕ ПАПКИ ГМ", self)
         title.setFont(self.FONTS['title'])
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root_layout.addWidget(title)
 
+        # Поле поиска
         search_row = QHBoxLayout()
         search_row.setSpacing(10)
         search_row.addStretch()
 
-        self.entry_gm = AnimatedPlaceholderEntry(
-            placeholder="Введите номер или адрес ГМ",
+        self.entry_gm = StyledEntry(
+            placeholder="Название или код (например: Балаково 3)",
             parent=self
         )
         self.entry_gm.setMinimumWidth(500)
@@ -94,6 +122,7 @@ class GmFrame(BaseFrame):
         self.entry_gm.returnPressed.connect(self.search)
         search_row.addWidget(self.entry_gm)
 
+        # Кнопка "Найти" с SVG
         btn_search = PrimaryButton(
             "Найти",
             on_click=self.search,
@@ -110,10 +139,16 @@ class GmFrame(BaseFrame):
         search_row.addStretch()
         root_layout.addLayout(search_row)
 
-        self.status_label = QLabel("", self)
-        self.status_label.setVisible(False)
+        # Статус
+        self.status_label = QLabel("Введите запрос для поиска", self)
+        self.status_label.setFont(self.FONTS['small'])
+        self.status_label.setStyleSheet(
+            f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
+        )
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root_layout.addWidget(self.status_label)
 
+        # Контейнер результатов
         results_label = QLabel("Результаты поиска", self)
         results_label.setFont(self.FONTS['subtitle'])
         root_layout.addWidget(results_label)
@@ -131,6 +166,7 @@ class GmFrame(BaseFrame):
         self.results_scroll.setWidget(self.results_content)
         root_layout.addWidget(self.results_scroll, 1)
 
+        # Кнопка создания ярлыка
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
@@ -142,6 +178,7 @@ class GmFrame(BaseFrame):
         self.btn_create_shortcut.setMinimumWidth(340)
         self.btn_create_shortcut.setMinimumHeight(42)
         self.btn_create_shortcut.setEnabled(False)
+        # Иконка link
         link_icon = get_icon_simple("link", color="#FFFFFF", size=18)
         if not link_icon.isNull():
             self.btn_create_shortcut.setIcon(link_icon)
@@ -151,33 +188,30 @@ class GmFrame(BaseFrame):
         btn_row.addStretch()
         root_layout.addLayout(btn_row)
 
-    def _go_back(self):
-        """Возврат в меню «Утилиты»."""
-        try:
-            self.app.show_tab("utils")
-        except Exception as e:
-            log.warning(f"Не удалось вернуться в утилиты: {e}")
-
     # =========================================================
     # ЗАГРУЗКА GM_DATA
     # =========================================================
-    def _load_gm_data(self):
+    def _load_gm_data(self, show_errors=True):
         if not os.path.exists(GM_DATA_PATH):
-            self.show_error("Ошибка", f"Файл данных не найден:\n{GM_DATA_PATH}")
+            if show_errors:
+                self.show_error("Ошибка", f"Файл данных не найден:\n{GM_DATA_PATH}")
             return None
 
         try:
             with open(GM_DATA_PATH, "r", encoding="utf-8") as f:
                 gm_data = json.load(f)
         except json.JSONDecodeError as e:
-            self.show_error("Ошибка", f"gm_data.json повреждён:\n{e}")
+            if show_errors:
+                self.show_error("Ошибка", f"gm_data.json повреждён:\n{e}")
             return None
         except (IOError, OSError) as e:
-            self.show_error("Ошибка", f"Не удалось прочитать gm_data.json:\n{e}")
+            if show_errors:
+                self.show_error("Ошибка", f"Не удалось прочитать gm_data.json:\n{e}")
             return None
 
         if not isinstance(gm_data, list):
-            self.show_error("Ошибка", "gm_data.json должен содержать список магазинов.")
+            if show_errors:
+                self.show_error("Ошибка", "gm_data.json должен содержать список магазинов.")
             return None
 
         valid_data = []
@@ -198,42 +232,56 @@ class GmFrame(BaseFrame):
         if not gm_data:
             return
 
+        try:
+            if self._gm_completer is not None:
+                self.entry_gm.setCompleter(None)
+        except Exception:
+            pass
+        self._gm_completer = None
+        self._gm_model = None
+
         items = []
         for g in gm_data:
             code = g.get("Код", "")
             name = g.get("Название", "")
-            address = g.get("Адрес", "")
-            if address:
-                items.append(f"{code} — {name} — {address}")
-            else:
-                items.append(f"{code} — {name}")
+            items.append(f"{code} — {name}")
 
-        model = QStringListModel(items, self.entry_gm)
-        completer = QCompleter(model, self.entry_gm)
+        if not items:
+            return
+
+        self._gm_model = QStringListModel(items, self.entry_gm)
+        completer = QCompleter(self._gm_model, self.entry_gm)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
         completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         completer.setMaxVisibleItems(15)
-
         style_popup(completer)
 
         self.entry_gm.setCompleter(completer)
+        self._gm_completer = completer
 
         def _on_activated(text):
-            self.entry_gm.setText(text)
+            # из "991602 — Бугульма 1 Советская" берём только код "991602"
+            code = text.split(" — ", 1)[0].strip()
+            self.entry_gm.setText(code)
             self.search()
 
         completer.activated.connect(_on_activated)
 
         def _on_text_changed_for_completer(text):
-            if not text:
-                completer.popup().hide()
-                return
-            completer.setCompletionPrefix(text)
-            if completer.completionCount() > 0:
-                completer.complete()
-            else:
-                completer.popup().hide()
+            try:
+                if self._gm_completer is None:
+                    return
+                if not text:
+                    self._gm_completer.popup().hide()
+                    return
+                self._gm_completer.setCompletionPrefix(text)
+                if self._gm_completer.completionCount() > 0:
+                    self._gm_completer.complete()
+                else:
+                    self._gm_completer.popup().hide()
+            except RuntimeError:
+                pass
 
         self.entry_gm.textEdited.connect(_on_text_changed_for_completer)
 
@@ -257,15 +305,10 @@ class GmFrame(BaseFrame):
         if gm_data is None:
             return
 
-        self._attach_completer(gm_data)
-
-        results = []
-        for g in gm_data:
-            code = g.get("Код", "").lower()
-            name = g.get("Название", "").lower()
-            address = g.get("Адрес", "").lower()
-            if query in code or query in name or query in address:
-                results.append(g)
+        results = [
+            g for g in gm_data
+            if query in g["Код"].lower() or query in g["Название"].lower()
+        ]
 
         if not results:
             self.show_status("Ничего не найдено",
@@ -274,6 +317,8 @@ class GmFrame(BaseFrame):
 
         self.show_status(f"Найдено: {len(results)}",
                          self.COLORS.get('success', '#4CAF50'))
+
+        self._save_last_query(query)
 
         for g in results:
             self._create_result_row(g)
@@ -326,15 +371,6 @@ class GmFrame(BaseFrame):
         )
         row_layout.addWidget(name_label, 1)
 
-        address = gm.get("Адрес", "")
-        if address:
-            addr_label = QLabel(address, row)
-            addr_label.setFont(self.FONTS['small'])
-            addr_label.setStyleSheet(
-                f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
-            )
-            row_layout.addWidget(addr_label)
-
         row.mousePressEvent = lambda e, c=gm["Код"], r=row: self._select(c, r)
 
         def _on_double_click(e, c=gm["Код"], r=row):
@@ -362,6 +398,23 @@ class GmFrame(BaseFrame):
         row.style().polish(row)
 
         self.btn_create_shortcut.setEnabled(True)
+
+    # =========================================================
+    # ПОСЛЕДНИЙ ЗАПРОС
+    # =========================================================
+    def _restore_last_query(self):
+        try:
+            last = self._settings.value("gm_last_query", "")
+            if last:
+                self.entry_gm.setText(last)
+        except Exception:
+            pass
+
+    def _save_last_query(self, query):
+        try:
+            self._settings.setValue("gm_last_query", query)
+        except Exception:
+            pass
 
     # =========================================================
     # СОЗДАНИЕ ЯРЛЫКА И ПАПКИ ПИ
@@ -535,4 +588,6 @@ class GmFrame(BaseFrame):
     # СТАТУС
     # =========================================================
     def show_status(self, text, color=None):
-        log.debug(f"GmFrame status: {text}")
+        self.status_label.setText(text)
+        if color:
+            self.status_label.setStyleSheet(f"color: {color};")

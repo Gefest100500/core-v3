@@ -5,8 +5,12 @@
 Чистые функции, без PyQt.
 Вынесено из ui/frames/comments_frame.py.
 
-- resolve_conditional_block — логика условий (минус/плюс)
+- resolve_conditional_block — логика условий (минус/плюс/ноль)
 - build_comment_text — сборка текста из шаблона и значений
+
+ИЗМЕНЕНИЯ:
+- conditional_block: добавлено третье состояние zero_text (сумма 0 или пусто).
+- Добавлен тип abs_formatted — подставляет модуль числа (без минуса).
 """
 import re
 
@@ -29,6 +33,7 @@ def resolve_conditional_block(cfg, values, for_copy=True):
     sign_mode = cfg.get("sign_mode", "sum")
 
     has_minus = False
+    is_zero_or_empty = False
 
     if sign_mode == "sum":
         total = 0.0
@@ -39,15 +44,19 @@ def resolve_conditional_block(cfg, values, for_copy=True):
                 total += v
                 found = True
         has_minus = found and total < 0
+        is_zero_or_empty = (not found) or (found and total == 0)
     else:
         for k in sign_keys:
             v = to_float(values.get(k, ""))
             if v is not None and v < 0:
                 has_minus = True
                 break
+        is_zero_or_empty = not has_minus
 
     if has_minus:
         return cfg.get("surplus_text", "")
+    if is_zero_or_empty and "zero_text" in cfg:
+        return cfg.get("zero_text", "")
     return cfg.get("deficit_text", "")
 
 
@@ -88,7 +97,7 @@ def build_comment_text(item, values, for_copy=True):
         else:
             result = result.replace("{гм_part}", "")
 
-    # 3. Суммы и проценты
+    # 3. Суммы, проценты и модули
     for spec_key, spec_cfg in special.items():
         placeholder = "{" + spec_key + "}"
         if placeholder not in result:
@@ -103,6 +112,17 @@ def build_comment_text(item, values, for_copy=True):
                 result = result.replace(placeholder, format_number_ru(total))
             else:
                 result = result.replace(placeholder, "—" if for_copy else "…")
+
+        elif spec_type == "abs_formatted":
+            key = spec_cfg.get("key", "")
+            val = to_float(values.get(key, ""))
+            if val is not None:
+                result = result.replace(
+                    placeholder,
+                    format_number_ru(abs(val))
+                )
+            else:
+                result = result.replace(placeholder, "" if for_copy else "…")
 
         elif spec_type == "percent_formatted":
             num_key = spec_cfg.get("numerator", "")

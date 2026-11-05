@@ -6,6 +6,10 @@
 - Подсказка (hint_label) теперь всегда нейтральная (серая),
   без красного акцента.
 - Добавлен setObjectName("StatusNeutral") для подсказки.
+- COMMENTS_PATH теперь берётся из utils.data_manager (единая точка правды),
+  читается из %LOCALAPPDATA%/Core_V3_0/data.
+- В _attach_gm_completer добавлена очистка кода товара из поля ГМ:
+  при выборе из выпадающего списка остаётся только название.
 """
 import os
 import json
@@ -26,11 +30,12 @@ from ui.icons import get_icon_simple
 from utils.logger import log
 from core.comments_builder import build_comment_text
 
+from utils.data_manager import GM_DATA_PATH, STANDARD_COMMENTS_PATH
+
 
 BASE_DIR = get_base_dir()
 
-COMMENTS_PATH = os.path.join(BASE_DIR, "data", "standard_comments.json")
-GM_DATA_PATH = os.path.join(BASE_DIR, "data", "gm_data.json")
+COMMENTS_PATH = STANDARD_COMMENTS_PATH
 
 EMOJI_TO_ICON = {
     "🏭": "production",
@@ -149,7 +154,6 @@ class CommentsFrame(BaseFrame):
         root_layout.addWidget(self.scroll, 1)
 
     def _get_hint_text_and_color(self):
-        # Всегда нейтральный цвет (серый)
         if self.current_gm_name:
             return (
                 f"Активная инвентаризация: {self.current_gm_name}",
@@ -389,12 +393,22 @@ class CommentsFrame(BaseFrame):
 
         entry.setCompleter(completer)
 
-        def _on_activated(text):
+        # Флаг, чтобы не зациклиться при программной замене текста
+        state = {"updating": False}
+
+        def _strip_code(text):
+            """Убирает код из строки 'код — название', оставляя название."""
             if " — " in text:
-                name_only = text.split(" — ", 1)[1]
-            else:
-                name_only = text
-            entry.setText(name_only)
+                return text.split(" — ", 1)[1]
+            return text
+
+        def _on_activated(text):
+            name_only = _strip_code(text)
+            state["updating"] = True
+            try:
+                entry.setText(name_only)
+            finally:
+                state["updating"] = False
 
         completer.activated.connect(_on_activated)
 
@@ -409,6 +423,25 @@ class CommentsFrame(BaseFrame):
                 completer.popup().hide()
 
         entry.textEdited.connect(_on_text_edited_for_completer)
+
+        # Гарантированная очистка кода: если в поле оказался "код — название"
+        # (например, QCompleter вставил его сам, не вызвав activated),
+        # оставляем только название.
+        def _on_text_changed_strip_code(text):
+            if state["updating"]:
+                return
+            if " — " not in text:
+                return
+            name_only = _strip_code(text)
+            if name_only == text:
+                return
+            state["updating"] = True
+            try:
+                entry.setText(name_only)
+            finally:
+                state["updating"] = False
+
+        entry.textChanged.connect(_on_text_changed_strip_code)
 
     # =========================================================
     # ПРЕДПРОСМОТР

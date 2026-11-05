@@ -5,7 +5,9 @@ r"""
 ИЗМЕНЕНИЯ:
 - Прогресс-бары (по дням и по чек-листу) теперь СЕРЫЕ (в едином стиле).
 - Убран зелёный цвет из процента чек-листа.
+- Тёмная шапка для диалога «План инвентаризации» (WinAPI).
 """
+import ctypes
 import re
 from datetime import date, datetime
 
@@ -42,6 +44,36 @@ from core.inventory_helper import (
     format_date_ru,
     get_day_data,
 )
+
+
+# =========================================================
+# ТЁМНЫЙ TITLE BAR (Windows API) — локальная копия из main.py
+# =========================================================
+DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
+
+
+def _apply_dark_title_bar(widget):
+    try:
+        hwnd = int(widget.winId())
+        value = ctypes.c_int(1)
+
+        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            ctypes.byref(value),
+            ctypes.sizeof(value),
+        )
+
+        if result != 0:
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE_OLD,
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+    except Exception:
+        pass
 
 
 class InventoryFrame(BaseFrame):
@@ -937,6 +969,9 @@ class InventoryFrame(BaseFrame):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"План инвентаризации — Вариант {variant_key}")
         dlg.resize(800, 700)
+
+        # Тёмная шапка для диалога (WinAPI)
+        _apply_dark_title_bar(dlg)
 
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(20, 20, 20, 20)

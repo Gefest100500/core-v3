@@ -3,12 +3,12 @@
 Анализ паллет.
 
 ИЗМЕНЕНИЯ:
-- Убраны локальные стили прогресс-бара, статуса и lbl_sum.
-  Теперь они используют глобальный QSS из ui/styles.py.
-- Добавлен setObjectName для прогресс-бара и статуса.
-- Убран зелёный цвет из _on_finish и _update_folder_status.
+- Убран лейбл «Сумма расхождений» (total_sum больше не считается).
+- Подсказка и проверка файлов: имя — 6-значный номер паллеты.
+- Добавлена кнопка «Файл инвентаризации» (активна после успешного запуска).
 """
 import os
+import re
 
 from PyQt6.QtCore import Qt, QSettings, QSize
 from PyQt6.QtGui import QIcon
@@ -26,6 +26,7 @@ from utils.logger import log
 
 
 EXCEL_EXTENSIONS = (".xlsx", ".xls")
+PALLET_NAME_RE = re.compile(r"^\d{6}$")
 
 
 class PalFrame(BaseFrame):
@@ -40,6 +41,8 @@ class PalFrame(BaseFrame):
 
         self._settings = QSettings("SilchenkoAleksey", "CoreV3")
 
+        self._last_inventory_file = ""
+
         self._setup_ui()
         self._restore_state()
 
@@ -51,7 +54,6 @@ class PalFrame(BaseFrame):
         root_layout.setContentsMargins(16, 16, 16, 16)
         root_layout.setSpacing(10)
 
-        # --- Верхняя панель: Назад ---
         top = QHBoxLayout()
         btn_back = SecondaryButton(
             "Назад в утилиты",
@@ -63,13 +65,11 @@ class PalFrame(BaseFrame):
         top.addStretch()
         root_layout.addLayout(top)
 
-        # --- Заголовок ---
         title = QLabel("АНАЛИЗ ПАЛЛЕТ", self)
         title.setFont(self.FONTS['title'])
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         root_layout.addWidget(title)
 
-        # --- Карточка с выбором папки ---
         card = create_card(self)
 
         icon_label = QLabel(card)
@@ -88,7 +88,10 @@ class PalFrame(BaseFrame):
         card_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card.layout().addWidget(card_title)
 
-        card_hint = QLabel("Имена файлов: 1.xlsx, 2.xlsx ...", card)
+        card_hint = QLabel(
+            "Имена файлов: номер паллеты (6 цифр), например 528596.xls",
+            card
+        )
         card_hint.setFont(self.FONTS['small'])
         card_hint.setStyleSheet(
             f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
@@ -135,24 +138,7 @@ class PalFrame(BaseFrame):
         root_layout.addWidget(card)
         root_layout.addStretch()
 
-        # --- Сумма расхождений (без зелёного) ---
-        self.lbl_sum = QLabel("Сумма расхождений: —", self)
-        self.lbl_sum.setObjectName("StatusNeutral")
-        self.lbl_sum.setFont(self.FONTS['subtitle'])
-        self.lbl_sum.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_sum.setStyleSheet(f"""
-            QLabel {{
-                color: {self.COLORS.get('text', '#E0E0E0')};
-                background-color: {self.COLORS.get('sidebar', '#2A2A2A')};
-                border: 1px solid {self.COLORS.get('border', '#333333')};
-                border-radius: 10px;
-                padding: 15px 30px;
-                font-size: 18px;
-            }}
-        """)
-        root_layout.addWidget(self.lbl_sum)
-
-        # --- Прогресс (глобальный стиль, серый) ---
+        # --- Прогресс ---
         progress_row = QVBoxLayout()
         progress_row.setSpacing(6)
 
@@ -165,7 +151,6 @@ class PalFrame(BaseFrame):
         self.progress_bar.setFixedHeight(14)
         progress_row.addWidget(self.progress_bar)
 
-        # --- Статус (глобальный стиль, нейтральный) ---
         self.status_label = QLabel("Ожидание...", self)
         self.status_label.setObjectName("StatusNeutral")
         self.status_label.setFont(self.FONTS['status'])
@@ -184,17 +169,27 @@ class PalFrame(BaseFrame):
             on_click=self.start_analysis,
             parent=self
         )
-        self.btn_run_pal.setMinimumWidth(250)
+        self.btn_run_pal.setMinimumWidth(220)
         self.btn_run_pal.setMinimumHeight(45)
         self.btn_run_pal.setEnabled(False)
         action_panel.addWidget(self.btn_run_pal)
+
+        self.btn_inventory = SecondaryButton(
+            "Файл инвентаризации",
+            on_click=self.open_inventory_file,
+            parent=self
+        )
+        self.btn_inventory.setMinimumWidth(220)
+        self.btn_inventory.setMinimumHeight(45)
+        self.btn_inventory.setEnabled(False)
+        action_panel.addWidget(self.btn_inventory)
 
         self.btn_open_pal = SecondaryButton(
             "Открыть результат",
             on_click=lambda: self.open_folder("pal"),
             parent=self
         )
-        self.btn_open_pal.setMinimumWidth(250)
+        self.btn_open_pal.setMinimumWidth(220)
         self.btn_open_pal.setMinimumHeight(45)
         self.btn_open_pal.setEnabled(False)
         action_panel.addWidget(self.btn_open_pal)
@@ -260,15 +255,10 @@ class PalFrame(BaseFrame):
 
         count = 0
         for f in files:
-            name_without_ext = f
-            for ext in EXCEL_EXTENSIONS:
-                if f.lower().endswith(ext):
-                    name_without_ext = f[:-len(ext)]
-                    break
-            else:
+            base, ext = os.path.splitext(f)
+            if ext.lower() not in EXCEL_EXTENSIONS:
                 continue
-
-            if name_without_ext.isdigit():
+            if PALLET_NAME_RE.match(base):
                 count += 1
 
         if count > 0:
@@ -278,7 +268,9 @@ class PalFrame(BaseFrame):
             )
             self.btn_run_pal.setEnabled(True)
         else:
-            self.lbl_folder_status.setText("Нет файлов 1.xlsx, 2.xlsx ...")
+            self.lbl_folder_status.setText(
+                "Нет файлов с именем из 6 цифр (например, 528596.xls)"
+            )
             self.lbl_folder_status.setStyleSheet(
                 f"color: {self.COLORS.get('error', '#FF5252')};"
             )
@@ -293,6 +285,7 @@ class PalFrame(BaseFrame):
             return
 
         self.btn_run_pal.setEnabled(False)
+        self.btn_inventory.setEnabled(False)
         self._set_progress(0)
         self._show_status("Сборка...", self.COLORS.get('text_dim', '#A0A0A0'))
 
@@ -334,26 +327,16 @@ class PalFrame(BaseFrame):
         self._set_progress(1000)
 
         if res and res.get("success"):
-            total = res.get("total_sum", 0)
-
             self._show_status(
                 "Готово!",
-                self.COLORS.get('text_dim', '#A0A0A0')  # Серый, не зелёный
+                self.COLORS.get('text_dim', '#A0A0A0')
             )
 
-            self.lbl_sum.setText(f"Сумма расхождений: {total:.2f} руб.")
-            self.lbl_sum.setStyleSheet(f"""
-                QLabel {{
-                    color: {self.COLORS.get('text', '#E0E0E0')};
-                    background-color: {self.COLORS.get('sidebar', '#2A2A2A')};
-                    border: 1px solid {self.COLORS.get('border', '#333333')};
-                    border-radius: 10px;
-                    padding: 15px 30px;
-                    font-size: 18px;
-                }}
-            """)
+            self._last_inventory_file = res.get("inventory_file", "")
 
             self.btn_open_pal.setEnabled(True)
+            if self._last_inventory_file and os.path.isfile(self._last_inventory_file):
+                self.btn_inventory.setEnabled(True)
 
             if hasattr(self.app, "finish_progress"):
                 self.app.finish_progress(True, "Готово")
@@ -361,7 +344,7 @@ class PalFrame(BaseFrame):
             try:
                 self.dm.add_action(
                     "Анализ паллет",
-                    f"Сумма: {total:.2f} руб.",
+                    "Сводка готова",
                     "🧩"
                 )
             except Exception:
@@ -376,6 +359,24 @@ class PalFrame(BaseFrame):
                 self.app.finish_progress(False, "Провал")
 
         self.btn_run_pal.setEnabled(True)
+
+    # =========================================================
+    # ФАЙЛ ИНВЕНТАРИЗАЦИИ
+    # =========================================================
+    def open_inventory_file(self):
+        if not self._last_inventory_file or not os.path.isfile(self._last_inventory_file):
+            self.show_warning("Файл не найден", "Сначала выполните сборку отчёта.")
+            return
+
+        self.show_success(
+            "Файл инвентаризации",
+            f"Файл создан:\n{self._last_inventory_file}"
+        )
+
+        try:
+            os.startfile(os.path.dirname(self._last_inventory_file))
+        except Exception as e:
+            log.warning(f"Не удалось открыть папку: {e}")
 
     # =========================================================
     # ПРОГРЕСС / СТАТУС

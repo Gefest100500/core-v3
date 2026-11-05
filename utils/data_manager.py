@@ -15,12 +15,13 @@
 - ФИКС ДЕДЛОКА: add_action и set_history вызывали _read_file
   внутри with lock: — _read_file сам берёт тот же лок.
   Теперь чтение идёт ДО взятия лока.
-
 - ФИКС WINDOWS PermissionError: _writer_loop пишет файл без лока,
   а _read_file читает его с локом. На Windows это приводило к
   PermissionError при чтении, пока файл открыт на запись.
   Теперь _writer_loop берёт тот же лок, что и _read_file,
   через _write_file_safe().
+- Добавлен STANDARD_COMMENTS_PATH: теперь comments_frame.py
+  читает standard_comments.json из DATA_DIR, а не из корня проекта.
 """
 import concurrent.futures
 import hashlib
@@ -45,6 +46,7 @@ INVENTORY_ARCHIVE_PATH = DATA_DIR / "inventory_archive.json"
 GM_DATA_PATH = DATA_DIR / "gm_data.json"
 INVENTORY_PLANS_PATH = DATA_DIR / "inventory_plans.json"
 GM_NOTES_PATH = DATA_DIR / "gm_notes.json"
+STANDARD_COMMENTS_PATH = DATA_DIR / "standard_comments.json"
 
 EMAILS_DIR = DATA_DIR / "emails"
 EMAILS_PATH = EMAILS_DIR / "emails.json"
@@ -91,8 +93,6 @@ class DataManager:
 
             name, path, data = item
             try:
-                # ФИКС: берём тот же лок, что и _read_file,
-                # чтобы не пересекаться с чтением на Windows.
                 lock = self._get_lock(name)
                 with lock:
                     self._write_file(name, path, data)
@@ -163,8 +163,6 @@ class DataManager:
             with open(str(tmp_path), "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
-            # ФИКС WINDOWS: os.replace может упасть с PermissionError,
-            # если файл занят антивирусом / индексатором.
             last_exc = None
             for attempt in range(5):
                 try:
@@ -215,7 +213,6 @@ class DataManager:
         log.info(f"История обновлена: {len(new_history)} записей")
 
     def add_action(self, action, details="", icon="•"):
-        # Читаем историю ДО взятия лока — _read_file сам берёт лок.
         history = self._read_file("history", HISTORY_PATH) or []
 
         new_history = list(history)
