@@ -1,12 +1,14 @@
 # ui/components/weather_widget.py
 """
 Виджет погоды для главной страницы.
-Использует WebView2 (pywv2) для запроса к API (обход блокировок фаервола).
+Использует WebView2 (pywv2) с невидимым родительским окном.
 """
 import json
 import time
+import ctypes
+from ctypes import wintypes
 
-from PyQt6.QtCore import Qt, pyqtSignal, QThread
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QVBoxLayout, QHBoxLayout, QLabel
 
@@ -21,6 +23,26 @@ try:
 except ImportError:
     WEBVIEW_AVAILABLE = False
     log.warning("pywv2 не установлен — виджет погоды будет показывать заглушку")
+
+# --- WinAPI для создания невидимого родительского окна ---
+user32 = ctypes.windll.user32
+WS_POPUP = 0x80000000
+WS_EX_TOOLWINDOW = 0x00000080
+SW_HIDE = 0
+
+def create_hidden_window() -> int:
+    """Создаёт невидимое родительское окно и возвращает его HWND."""
+    hwnd = user32.CreateWindowExW(
+        WS_EX_TOOLWINDOW,  # Чтобы не было в панели задач
+        "STATIC",          # Класс окна (просто заглушка)
+        "WeatherProxy",    # Заголовок
+        WS_POPUP,          # Стиль (без рамок)
+        0, 0, 0, 0,        # Позиция и размер (0x0)
+        0, 0, 0, 0,
+    )
+    if hwnd:
+        user32.ShowWindow(hwnd, SW_HIDE)
+    return hwnd
 
 
 # Погодные коды Open-Meteo (WMO)
@@ -59,7 +81,6 @@ class _WeatherFetchThread(QThread):
         result = {}
         city = ""
         try:
-            # 1. Определяем город по IP
             ip = get_local_ip()
             code = find_gm_by_ip(ip) if ip else ""
             city = get_city_by_gm_code(code) if code else ""
@@ -74,46 +95,68 @@ class _WeatherFetchThread(QThread):
             if not WEBVIEW_AVAILABLE:
                 raise ValueError("WebView2 недоступен")
 
-            # 2. Запрашиваем погоду через WebView2
-            # Используем wttr.in (формат j1 — JSON)
             url = f"https://wttr.in/{lat},{lon}?format=j1"
+
+            # Создаём невидимое родительское окно
+            parent_hwnd = create_hidden_window()
+            if not parent_hwnd:
+                raise ValueError("Не удалось создать невидимое окно")
 
             view = pywv2.WebView(
                 title="Weather Fetch",
                 size=(100, 100),
+                parent_hwnd=parent_hwnd,  # Привязываем к скрытому окну
                 auto_pump=True,
                 context_menu=False,
             )
             view.start()
             
-            # Загружаем пустую страницу, чтобы контекст был готов
+            # Окно скрыто через родителя, но на всякий случай прячем само окно WebView
+            try:
+                hwnd = view.hwnd
+                if hwnd:
+                    user32.ShowWindow(hwnd, SW_HIDE)
+            except Exception:
+                pass
+
             view.load_html("<html><body>Loading...</body></html>")
-            
-            # Даём время на инициализацию
             time.sleep(2)
             
-            # Выполняем синхронный XHR запрос
             js = f"""
             (function() {{
                 var xhr = new XMLHttpRequest();
-                xhr.open('GET', '{url}', false); // false = синхронный
+                xhr.open('GET', '{url}', false);
                 xhr.send();
                 return xhr.responseText;
             }})()
             """
             
             text = view.eval(js)
+            
+            # Закрываем
+            try:
+                hwnd = view.hwnd
+                if hwnd:
+                    user32.ShowWindow(hwnd, SW_HIDE)
+            except Exception:
+                pass
+                
             view.close()
+            
+            # Уничтожаем родительское окно
+            if parent_hwnd:
+                try:
+                    user32.DestroyWindow(parent_hwnd)
+                except Exception:
+                    pass
             
             if not text:
                 raise ValueError("Пустой ответ от API")
             
-            # Парсим JSON от wttr.in
             data = json.loads(text)
             current = data.get("current_condition", [{}])[0]
             temp = float(current.get("temp_C", 0))
             
-            # Маппинг кодов wttr.in (WWO)
             wwo_code = current.get("weatherCode", "113")
             if wwo_code in ("113",):
                 code = 0
@@ -182,11 +225,8 @@ class WeatherWidget:
         city_label.setStyleSheet(f"color: {colors.get('text_dim', '#A0A0A0')};")
         layout.addWidget(city_label)
 
-        thread = _WeatherFetchThread(card)
-
-        def _on_loaded(data):
+        def _update_ui(data):
             city = data.get("city", "")
-            
             if not data.get("success"):
                 if city:
                     temp_label.setText("—")
@@ -202,7 +242,6 @@ class WeatherWidget:
 
             temp = data.get("temp")
             code = data.get("code")
-
             if temp is not None:
                 temp_label.setText(f"{round(temp)}°C")
             else:
@@ -212,17 +251,22 @@ class WeatherWidget:
             desc_label.setText(desc)
             city_label.setText(city)
 
-            icon = get_icon_simple(
-                icon_name,
-                color=colors.get('text_dim', '#A0A0A0'),
-                size=48
-            )
+            icon = get_icon_simple(icon_name, color=colors.get('text_dim', '#A0A0A0'), size=48)
             if not icon.isNull():
                 icon_label.setPixmap(icon.pixmap(48, 48))
 
-        thread.finished.connect(_on_loaded)
-        thread.start()
+        def _fetch():
+            thread = _WeatherFetchThread(card)
+            thread.finished.connect(_update_ui)
+            card._weather_thread = thread
+            thread.start()
 
-        card._weather_thread = thread
+        _fetch()
+
+        refresh_timer = QTimer(card)
+        refresh_timer.timeout.connect(_fetch)
+        refresh_timer.start(10 * 60 * 1000)  # 10 минут
+
+        card._weather_timer = refresh_timer
 
         return card
