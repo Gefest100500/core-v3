@@ -5,6 +5,7 @@
 ИЗМЕНЕНИЯ:
 - Прогресс-бар теперь СЕРЫЙ (в едином стиле), а не зелёный/красный.
 - Добавлен setObjectName для прогресс-бара.
+- В верхнюю панель добавлен виджет погоды (слева), приветствие выровнено по центру.
 """
 import os
 from datetime import datetime, date
@@ -22,6 +23,7 @@ from ui.components.widgets import (
     create_card, PrimaryButton, SecondaryButton
 )
 from ui.components.dialogs import ask_confirm
+from ui.components.weather_widget import WeatherWidget
 from ui.icons import get_icon_simple
 from utils.logger import log
 
@@ -155,11 +157,17 @@ class HomeFrame(BaseFrame):
         self.main_scroll.setWidget(self.scroll_content)
         root_layout.addWidget(self.main_scroll, 1)
 
-        # --- Приветствие + Часы ---
+        # --- Погода + Приветствие + Часы ---
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
 
-        # Приветствие
+        # Погода (слева)
+        weather_card = WeatherWidget.create(
+            self.scroll_content, self.COLORS, self.FONTS
+        )
+        top_row.addWidget(weather_card)
+
+        # Приветствие (по центру)
         greeting_card = create_card(self.scroll_content)
         greeting_card.setMinimumHeight(140)
         top_row.addWidget(greeting_card, 1)
@@ -169,6 +177,7 @@ class HomeFrame(BaseFrame):
 
         greeting_title = QLabel(f"{greeting}!", greeting_card)
         greeting_title.setFont(self.FONTS['title'])
+        greeting_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         greeting_card.layout().addWidget(greeting_title)
 
         greeting_sub = QLabel(
@@ -179,11 +188,12 @@ class HomeFrame(BaseFrame):
         greeting_sub.setStyleSheet(
             f"color: {self.COLORS.get('text_dim', '#A0A0A0')};"
         )
+        greeting_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         greeting_card.layout().addWidget(greeting_sub)
 
         greeting_card.layout().addStretch()
 
-        # Часы
+        # Часы (справа)
         clock_card = create_card(self.scroll_content)
         clock_card.setFixedWidth(340)
         clock_card.setMinimumHeight(140)

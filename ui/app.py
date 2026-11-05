@@ -97,6 +97,7 @@ class AuditApp(QMainWindow):
         self.kv_analyzer = None
         self.pal_analyzer = None
         self.osmbp_analyzer = None
+        self.brak_util_analyzer = None  # <-- ДОБАВЛЕНО
 
         try:
             from core.kv_analyzer import KvAnalyzer
@@ -115,6 +116,13 @@ class AuditApp(QMainWindow):
             self.osmbp_analyzer = OsMbpAnalyzer(self)
         except Exception as e:
             log.error(f"Ошибка создания OsMbpAnalyzer: {e}")
+
+        # <-- ДОБАВЛЕНО
+        try:
+            from core.brak_util_analyzer import BrakUtilAnalyzer
+            self.brak_util_analyzer = BrakUtilAnalyzer()
+        except Exception as e:
+            log.error(f"Ошибка создания BrakUtilAnalyzer: {e}")
 
     def _needs_sync(self) -> bool:
         try:
@@ -610,7 +618,8 @@ class AuditApp(QMainWindow):
 
         if name == "brak_util":
             from ui.frames.brak_util_frame import BrakUtilFrame
-            return BrakUtilFrame(self, name)
+            # <-- ИЗМЕНЕНО: добавлен analyzer
+            return BrakUtilFrame(self, name, self.brak_util_analyzer)
 
         if name == "distance":
             from ui.frames.distance_frame import DistanceFrame

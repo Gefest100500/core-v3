@@ -6,6 +6,7 @@
 - Убраны локальные стили прогресс-бара и статуса.
   Теперь они используют глобальный QSS из ui/styles.py.
 - Добавлен setObjectName для прогресс-бара и статуса.
+- В _on_finish добавлен показ результата (путь к Excel и ZIP, число расхождений).
 """
 import os
 
@@ -294,8 +295,32 @@ class BrakUtilFrame(BaseFrame):
         self.btn_run.setEnabled(True)
         if res and res.get("success"):
             self.status_label.setText("Анализ завершён")
+
+            out_file = res.get("file", "")
+            out_zip = res.get("zip", "")
+            total = res.get("total", 0)
+            discrepancies = res.get("discrepancies", [])
+
+            msg = f"Обработано строк: {total}\n"
+            msg += f"Найдено расхождений: {len(discrepancies)}\n\n"
+            msg += f"Файл Excel:\n{out_file}"
+            if out_zip:
+                msg += f"\n\nАрхив:\n{out_zip}"
+
+            self.show_success("Анализ завершён", msg)
+
+            try:
+                self.app.data_manager.add_action(
+                    "Брак/Утиль",
+                    f"ГМ {self.gm_entry.text().strip()}: расхождений {len(discrepancies)}",
+                    "🛢"
+                )
+            except Exception:
+                pass
         else:
             self.status_label.setText("Ошибка")
+            err = res.get("error") if isinstance(res, dict) else "Неизвестная ошибка"
+            self.show_error("Ошибка анализа", str(err))
 
     def _reset(self):
         self.btn_run.setEnabled(True)

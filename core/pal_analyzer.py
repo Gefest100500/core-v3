@@ -19,6 +19,7 @@
 """
 import os
 import re
+from copy import copy
 
 import pandas as pd
 from openpyxl.styles import Border, Side, Alignment
@@ -199,7 +200,9 @@ class PalAnalyzer:
                 for cell in row:
                     cell.border = border
                     if cell.row == 1:
-                        cell.font = cell.font.copy(bold=True)
+                        font = copy(cell.font)
+                        font.bold = True
+                        cell.font = font
                         cell.alignment = Alignment(
                             horizontal="center", vertical="center", wrap_text=True
                         )

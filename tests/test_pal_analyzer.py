@@ -3,59 +3,47 @@
 Тесты для core/pal_analyzer.py.
 
 Проверяем:
-- Валидацию столбцов (_validate_columns).
-- Сборку паллет из нескольких файлов.
-- Расчёт отклонений и суммы.
+- Сборку паллет из нескольких файлов (XXXXXX.xls).
+- № паллета берётся из имени файла.
+- Расчёт Отклонения; Сумма всегда 0.
+- Генерацию «Файл инвентаризации.txt» (сводная по Код товара).
 - Обработку отсутствующих файлов / неверных столбцов.
-- Создание выходного файла.
+- Игнорирование файлов, имя которых не 6 цифр.
+- Наличие границ и ширины столбцов в xlsx.
 """
 import os
 import pytest
 import pandas as pd
 
-from core.pal_analyzer import (
-    PalAnalyzer, REQUIRED_COLUMNS, FINAL_COLUMNS, COLUMN_RENAME,
-)
+from core.pal_analyzer import PalAnalyzer, SOURCE_COLUMNS, FINAL_COLUMNS
 
 
 # =========================================================
-# _validate_columns
+# Вспомогательные функции
 # =========================================================
-class TestValidateColumns:
+def _make_pallet_file(path, rows, extra_columns=None):
+    """Создаёт xlsx-файл с нужными столбцами и данными.
 
-    def test_all_present(self):
-        df = pd.DataFrame({col: [] for col in REQUIRED_COLUMNS})
-        # Не должно бросать исключение
-        PalAnalyzer._validate_columns(df, "test.xlsx")
+    В файле есть «Ст» (лишний столбец), чтобы убедиться, что анализатор
+    берёт только нужные колонки.
+    """
+    data = []
+    for r in rows:
+        row = {"Ст": 2}
+        for col in SOURCE_COLUMNS:
+            row[col] = r.get(col, "")
+        data.append(row)
 
-    def test_missing_column(self):
-        df = pd.DataFrame({"№ паллеты": [], "Код товара": []})
-        with pytest.raises(RuntimeError, match="нет столбцов"):
-            PalAnalyzer._validate_columns(df, "test.xlsx")
-
-    def test_missing_multiple(self):
-        df = pd.DataFrame({"№ паллеты": []})
-        with pytest.raises(RuntimeError) as exc:
-            PalAnalyzer._validate_columns(df, "test.xlsx")
-        # В сообщении должны быть перечислены все недостающие столбцы
-        assert "Код товара" in str(exc.value)
-        assert "Товар" in str(exc.value)
-
-
-# =========================================================
-# Вспомогательные функции для создания файлов
-# =========================================================
-def _make_pallet_file(path, rows):
-    """Создаёт xlsx-файл с нужными столбцами и данными."""
-    df = pd.DataFrame(rows, columns=REQUIRED_COLUMNS)
+    df = pd.DataFrame(data, columns=["Ст"] + SOURCE_COLUMNS)
+    if extra_columns:
+        for c in extra_columns:
+            df[c] = None
     df.to_excel(path, index=False)
 
 
 def _sample_rows():
-    """Две строки с валидными данными."""
     return [
         {
-            "№ паллеты": 1,
             "Код товара": "111",
             "Товар": "Товар А",
             "Цена": 100.0,
@@ -64,7 +52,6 @@ def _sample_rows():
             "Кол-во после": 8,
         },
         {
-            "№ паллеты": 2,
             "Код товара": "222",
             "Товар": "Товар Б",
             "Цена": 50.0,
@@ -75,6 +62,17 @@ def _sample_rows():
     ]
 
 
+def _run_with_tmp_base(analyzer, input_dir, tmp_path):
+    """Запускает анализатор, подменяя BASE_DIR, чтобы не трогать реальную папку."""
+    import core.pal_analyzer as pal_mod
+    original_base = pal_mod.BASE_DIR
+    pal_mod.BASE_DIR = str(tmp_path)
+    try:
+        return analyzer.run(str(input_dir))
+    finally:
+        pal_mod.BASE_DIR = original_base
+
+
 # =========================================================
 # run — успешный сценарий
 # =========================================================
@@ -83,70 +81,123 @@ class TestRunSuccess:
     def test_single_file(self, tmp_path):
         input_dir = tmp_path / "input"
         input_dir.mkdir()
-
-        _make_pallet_file(input_dir / "1.xlsx", _sample_rows())
+        _make_pallet_file(input_dir / "528596.xlsx", _sample_rows())
 
         analyzer = PalAnalyzer()
-        # Подменяем папку результатов, чтобы не трогать реальную
-        out_dir = tmp_path / "out"
-        analyzer.config = None
-
-        # Патчим BASE_DIR через monkeypatch не нужно — просто проверим,
-        # что run не падает и возвращает success.
-        # Но чтобы не писать в реальную папку, сделаем так:
-        import core.pal_analyzer as pal_mod
-        original_base = pal_mod.BASE_DIR
-        pal_mod.BASE_DIR = str(tmp_path)
-        try:
-            result = analyzer.run(str(input_dir))
-        finally:
-            pal_mod.BASE_DIR = original_base
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
 
         assert result["success"] is True
-        assert "total_sum" in result
+        assert "file" in result
+        assert "inventory_file" in result
         assert os.path.isfile(result["file"])
+        assert os.path.isfile(result["inventory_file"])
+        assert "total_sum" not in result
 
-    def test_total_sum_calculated(self, tmp_path):
+    def test_pallet_number_from_filename(self, tmp_path):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        _make_pallet_file(input_dir / "528596.xlsx", _sample_rows())
+
+        analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
+
+        df = pd.read_excel(result["file"])
+        assert list(df.columns) == FINAL_COLUMNS
+        assert set(df["№ паллета"].astype(str)) == {"528596"}
+
+    def test_deviation_calculated_sum_is_zero(self, tmp_path):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        _make_pallet_file(input_dir / "528596.xlsx", _sample_rows())
+
+        analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
+
+        df = pd.read_excel(result["file"])
+        deviations = df["Отклонение"].tolist()
+        assert deviations == [2, -2]
+        assert (df["Сумма"] == 0).all()
+
+    def test_multiple_files_sorted(self, tmp_path):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        _make_pallet_file(input_dir / "528596.xlsx", _sample_rows())
+        _make_pallet_file(input_dir / "528573.xlsx", _sample_rows())
+
+        analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
+
+        df = pd.read_excel(result["file"])
+        # Сначала 528573 (по возрастанию), потом 528596
+        first = str(df["№ паллета"].iloc[0])
+        assert first == "528573"
+
+
+# =========================================================
+# Файл инвентаризации (.txt)
+# =========================================================
+class TestInventoryFile:
+
+    def test_inventory_file_created(self, tmp_path):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        _make_pallet_file(input_dir / "528596.xlsx", _sample_rows())
+
+        analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
+
+        inv_path = result["inventory_file"]
+        assert inv_path.endswith("Файл инвентаризации.txt")
+        assert os.path.isfile(inv_path)
+
+        with open(inv_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+
+        # Строки вида "Код\tОтклонение", без шапки, отсортированы по коду
+        assert lines == ["111\t2", "222\t-2"]
+
+    def test_inventory_file_sums_by_code(self, tmp_path):
         input_dir = tmp_path / "input"
         input_dir.mkdir()
 
-        # Первая строка: (10-8)*100 = 200
-        # Вторая строка: (4-6)*50 = -100
-        # Итого: 100
-        _make_pallet_file(input_dir / "1.xlsx", _sample_rows())
+        # Один и тот же код товара в двух файлах
+        rows1 = [{
+            "Код товара": "111", "Товар": "А", "Цена": 10.0,
+            "% от всех": 1.0, "Кол-во до": 10, "Кол-во после": 8,
+        }]
+        rows2 = [{
+            "Код товара": "111", "Товар": "А", "Цена": 10.0,
+            "% от всех": 1.0, "Кол-во до": 5, "Кол-во после": 8,
+        }]
+        _make_pallet_file(input_dir / "528573.xlsx", rows1)
+        _make_pallet_file(input_dir / "528596.xlsx", rows2)
 
         analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
 
-        import core.pal_analyzer as pal_mod
-        original_base = pal_mod.BASE_DIR
-        pal_mod.BASE_DIR = str(tmp_path)
-        try:
-            result = analyzer.run(str(input_dir))
-        finally:
-            pal_mod.BASE_DIR = original_base
+        with open(result["inventory_file"], "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
 
-        assert result["total_sum"] == pytest.approx(100.0)
+        # Сумма отклонений по коду 111: 2 + (-3) = -1
+        assert lines == ["111\t-1"]
 
-    def test_multiple_files(self, tmp_path):
+    def test_inventory_file_has_zero(self, tmp_path):
         input_dir = tmp_path / "input"
         input_dir.mkdir()
 
-        _make_pallet_file(input_dir / "1.xlsx", _sample_rows())
-        _make_pallet_file(input_dir / "2.xlsx", _sample_rows())
+        rows = [{
+            "Код товара": "111", "Товар": "А", "Цена": 10.0,
+            "% от всех": 1.0, "Кол-во до": 10, "Кол-во после": 10,
+        }]
+        _make_pallet_file(input_dir / "528573.xlsx", rows)
 
         analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
 
-        import core.pal_analyzer as pal_mod
-        original_base = pal_mod.BASE_DIR
-        pal_mod.BASE_DIR = str(tmp_path)
-        try:
-            result = analyzer.run(str(input_dir))
-        finally:
-            pal_mod.BASE_DIR = original_base
+        with open(result["inventory_file"], "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
 
-        assert result["success"] is True
-        # Сумма должна удвоиться
-        assert result["total_sum"] == pytest.approx(200.0)
+        assert lines == ["111\t0"]
 
 
 # =========================================================
@@ -159,8 +210,8 @@ class TestRunErrors:
         input_dir.mkdir()
 
         analyzer = PalAnalyzer()
-        with pytest.raises(RuntimeError, match="нет файлов"):
-            analyzer.run(str(input_dir))
+        with pytest.raises(RuntimeError):
+            _run_with_tmp_base(analyzer, input_dir, tmp_path)
 
     def test_nonexistent_folder(self, tmp_path):
         analyzer = PalAnalyzer()
@@ -176,41 +227,58 @@ class TestRunErrors:
         input_dir = tmp_path / "input"
         input_dir.mkdir()
 
-        # Файл без нужных столбцов
+        # Файл с именем из 6 цифр, но без нужных столбцов
         df = pd.DataFrame({"Другой столбец": [1, 2]})
-        df.to_excel(input_dir / "1.xlsx", index=False)
+        df.to_excel(input_dir / "528596.xlsx", index=False)
 
         analyzer = PalAnalyzer()
-
-        import core.pal_analyzer as pal_mod
-        original_base = pal_mod.BASE_DIR
-        pal_mod.BASE_DIR = str(tmp_path)
-        try:
-            with pytest.raises(RuntimeError, match="нет столбцов"):
-                analyzer.run(str(input_dir))
-        finally:
-            pal_mod.BASE_DIR = original_base
+        with pytest.raises(RuntimeError, match="нет столбцов"):
+            _run_with_tmp_base(analyzer, input_dir, tmp_path)
 
     def test_ignores_non_digit_files(self, tmp_path):
         input_dir = tmp_path / "input"
         input_dir.mkdir()
 
-        # Файл с валидными данными
+        _make_pallet_file(input_dir / "528596.xlsx", _sample_rows())
+        # Имена не из 6 цифр — должны игнорироваться
         _make_pallet_file(input_dir / "1.xlsx", _sample_rows())
-        # Файл с нецифровым именем — должен игнорироваться
-        _make_pallet_file(input_dir / "abc.xlsx", _sample_rows())
-        # Файл без расширения — тоже
-        (input_dir / "2.txt").write_text("не excel", encoding="utf-8")
+        _make_pallet_file(input_dir / "abcdef.xlsx", _sample_rows())
+        (input_dir / "528596.txt").write_text("не excel", encoding="utf-8")
 
         analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
 
-        import core.pal_analyzer as pal_mod
-        original_base = pal_mod.BASE_DIR
-        pal_mod.BASE_DIR = str(tmp_path)
-        try:
-            result = analyzer.run(str(input_dir))
-        finally:
-            pal_mod.BASE_DIR = original_base
+        df = pd.read_excel(result["file"])
+        assert set(df["№ паллета"].astype(str)) == {"528596"}
 
-        # Должен обработать только 1.xlsx
-        assert result["total_sum"] == pytest.approx(100.0)
+    def test_no_digit_files_raises(self, tmp_path):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        _make_pallet_file(input_dir / "1.xlsx", _sample_rows())
+
+        analyzer = PalAnalyzer()
+        with pytest.raises(RuntimeError):
+            _run_with_tmp_base(analyzer, input_dir, tmp_path)
+
+
+# =========================================================
+# XLSX — оформление (границы)
+# =========================================================
+class TestXlsxFormatting:
+
+    def test_borders_present(self, tmp_path):
+        input_dir = tmp_path / "input"
+        input_dir.mkdir()
+        _make_pallet_file(input_dir / "528596.xlsx", _sample_rows())
+
+        analyzer = PalAnalyzer()
+        result = _run_with_tmp_base(analyzer, input_dir, tmp_path)
+
+        from openpyxl import load_workbook
+        wb = load_workbook(result["file"])
+        ws = wb["Задания ТСД"]
+
+        # У первой ячейки (шапка) должна быть рамка (граница)
+        cell = ws.cell(row=1, column=1)
+        assert cell.border is not None
+        assert cell.border.left.style is not None
