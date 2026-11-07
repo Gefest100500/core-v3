@@ -97,7 +97,7 @@ class AuditApp(QMainWindow):
         self.kv_analyzer = None
         self.pal_analyzer = None
         self.osmbp_analyzer = None
-        self.brak_util_analyzer = None  # <-- ДОБАВЛЕНО
+        self.brak_util_analyzer = None
 
         try:
             from core.kv_analyzer import KvAnalyzer
@@ -117,7 +117,6 @@ class AuditApp(QMainWindow):
         except Exception as e:
             log.error(f"Ошибка создания OsMbpAnalyzer: {e}")
 
-        # <-- ДОБАВЛЕНО
         try:
             from core.brak_util_analyzer import BrakUtilAnalyzer
             self.brak_util_analyzer = BrakUtilAnalyzer()
@@ -282,12 +281,15 @@ class AuditApp(QMainWindow):
             ("ai", "AI"),
             ("archive", "Архив"),
             ("timesheet", "Табель"),
+            ("settings", "Настройки"),   # <-- ДОБАВЛЕНО: Кнопка Настроек
             ("info", "Информация"),
         ]
 
         for key, label_text in buttons:
             tab_name = "web" if key == "globe" else key
             icon_name = "chart" if key == "dashboard" else key
+            if key == "settings":
+                icon_name = "settings"
 
             btn = QPushButton("")
             btn.setObjectName("SidebarBtn")
@@ -600,6 +602,10 @@ class AuditApp(QMainWindow):
             from ui.frames.timesheet_frame import TimesheetFrame
             return TimesheetFrame(self, name)
 
+        if name == "settings":        # <-- ДОБАВЛЕНО: Обработчик
+            from ui.frames.settings_frame import SettingsFrame
+            return SettingsFrame(self, name)
+
         if name == "info":
             from ui.frames.info_frame import InfoFrame
             return InfoFrame(self, name)
@@ -618,7 +624,6 @@ class AuditApp(QMainWindow):
 
         if name == "brak_util":
             from ui.frames.brak_util_frame import BrakUtilFrame
-            # <-- ИЗМЕНЕНО: добавлен analyzer
             return BrakUtilFrame(self, name, self.brak_util_analyzer)
 
         if name == "distance":
