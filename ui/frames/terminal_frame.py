@@ -1,10 +1,6 @@
 # ui/frames/terminal_frame.py
 """
 Терминал — подключение к удалённой машине ГМ через mstsc.
-
-ИЗМЕНЕНИЯ:
-- Плейсхолдер приведён к единому виду (с большой буквы).
-- Стиль выпадающего списка (QCompleter) применяется через style_popup.
 """
 import os
 import json
@@ -23,7 +19,6 @@ from ui.components.widgets import (
     create_card, PrimaryButton, SecondaryButton,
     style_popup, AnimatedPlaceholderEntry,
 )
-from ui.components.dialogs import ask_password
 from ui.icons import get_icon_simple
 
 from core.terminal_helper import (
@@ -135,28 +130,14 @@ class TerminalFrame(BaseFrame):
             on_click=self._on_connect,
             parent=card
         )
-        self.btn_connect.setMinimumWidth(280)
+        # Растягиваем кнопку на всю ширину, так как она осталась одна
         self.btn_connect.setMinimumHeight(46)
         plug_icon = get_icon_simple("terminal", color="#FFFFFF", size=18)
         if not plug_icon.isNull():
             self.btn_connect.setIcon(plug_icon)
             self.btn_connect.setIconSize(QSize(18, 18))
-        btn_row.addWidget(self.btn_connect)
+        btn_row.addWidget(self.btn_connect, 1)
 
-        self.btn_change_password = SecondaryButton(
-            "Сменить пароль",
-            on_click=self._on_change_password,
-            parent=card
-        )
-        self.btn_change_password.setMinimumWidth(220)
-        self.btn_change_password.setMinimumHeight(46)
-        key_icon = get_icon_simple("pencil", color=self.COLORS.get('text', '#E0E0E0'), size=16)
-        if not key_icon.isNull():
-            self.btn_change_password.setIcon(key_icon)
-            self.btn_change_password.setIconSize(QSize(16, 16))
-        btn_row.addWidget(self.btn_change_password)
-
-        btn_row.addStretch()
         card.layout().addLayout(btn_row)
 
         self.status_label = QLabel("", card)
@@ -246,7 +227,7 @@ class TerminalFrame(BaseFrame):
         password = self._load_password()
         if not password:
             self._set_status(
-                "Пароль не задан. Нажмите «Сменить пароль», чтобы указать его.",
+                "Пароль не задан. Зайдите в «Настройки», чтобы указать его.",
                 "#FFD700"
             )
             return
@@ -308,17 +289,8 @@ class TerminalFrame(BaseFrame):
             return False, str(e)
 
     # =========================================================
-    # СМЕНА ПАРОЛЯ
+    # ПАРОЛЬ
     # =========================================================
-    def _on_change_password(self):
-        new_password = ask_password(self)
-        if not new_password:
-            return
-
-        self._save_password(new_password)
-        self._set_status("Пароль обновлён.", "#4CAF50")
-        log.info("TerminalFrame: пароль обновлён")
-
     def _load_password(self):
         try:
             token = self._settings.value("terminal_password", "")
@@ -328,14 +300,6 @@ class TerminalFrame(BaseFrame):
         except Exception as e:
             log.warning(f"TerminalFrame: ошибка загрузки пароля: {e}")
             return ""
-
-    def _save_password(self, password):
-        try:
-            token = xor_encrypt(password, self._password_key)
-            self._settings.setValue("terminal_password", token)
-            log.info("TerminalFrame: пароль сохранён (зашифрован)")
-        except Exception as e:
-            log.exception(f"TerminalFrame: ошибка сохранения пароля: {e}")
 
     # =========================================================
     # СТАТУС И REFRESH

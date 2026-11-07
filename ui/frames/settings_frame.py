@@ -3,11 +3,10 @@
 Вкладка настроек.
 """
 import os
-from datetime import datetime
-from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox, QWidget,
-    QFileDialog, QPushButton, QCheckBox
+    QFileDialog, QPushButton, QLineEdit
 )
 
 from ui.frames.base_frame import BaseFrame
@@ -17,6 +16,7 @@ from ui.components.widgets import (
 from ui.icons import get_icon_simple
 from ui.components.test_dialog import TestDialog
 from utils.logger import log
+from core.terminal_helper import xor_encrypt, xor_decrypt, get_password_key
 
 
 class SettingsFrame(BaseFrame):
@@ -25,8 +25,8 @@ class SettingsFrame(BaseFrame):
     def __init__(self, parent, name=None):
         super().__init__(parent, name)
         self._settings = QSettings("SilchenkoAleksey", "CoreV3")
+        self._password_key = get_password_key()
         self._setup_ui()
-        self._check_auto_log()
 
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
@@ -43,6 +43,34 @@ class SettingsFrame(BaseFrame):
         card_mail = create_card(self)
         card_mail.layout().addWidget(self._make_label("Почта (Outlook)"))
         
+        # Корпоративная почта
+        row_email = QHBoxLayout()
+        row_email.setSpacing(10)
+        row_email.addWidget(self._make_label("Корпоративная почта:"))
+        
+        self.input_email = QLineEdit()
+        self.input_email.setPlaceholderText("example@magnit.ru")
+        self.input_email.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {self.COLORS.get('card', '#222222')};
+                color: {self.COLORS.get('text', '#E0E0E0')};
+                border: 1px solid {self.COLORS.get('border', '#333333')};
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {self.COLORS.get('button', '#D42626')};
+            }}
+        """)
+        self.input_email.setFixedWidth(300)
+        saved_email = self._settings.value("user_email", "")
+        self.input_email.setText(str(saved_email))
+        
+        row_email.addWidget(self.input_email)
+        row_email.addStretch()
+        card_mail.layout().addLayout(row_email)
+
         # Глубина поиска
         row_days = QHBoxLayout()
         row_days.setSpacing(10)
@@ -54,7 +82,6 @@ class SettingsFrame(BaseFrame):
         )
         self.combo_days.setFixedWidth(200)
         
-        # Загружаем сохраненное значение
         val = self._settings.value("email_days_back", "7")
         if val == "7": self.combo_days.setCurrentText("7 дней")
         elif val == "14": self.combo_days.setCurrentText("14 дней")
@@ -66,8 +93,7 @@ class SettingsFrame(BaseFrame):
         card_mail.layout().addLayout(row_days)
 
         hint = QLabel(
-            "При запуске программа будет загружать письма только за указанный период. "
-            "Это ускоряет запуск на машинах с большой почтой.",
+            "При запуске программа будет загружать письма только за указанный период.",
             card_mail
         )
         hint.setFont(self.FONTS['small'])
@@ -77,7 +103,7 @@ class SettingsFrame(BaseFrame):
 
         root_layout.addWidget(card_mail)
 
-        # --- Карточка 2: Папки ---
+        # --- Карточка 2: Папки и Терминал ---
         card_folders = create_card(self)
         card_folders.layout().addWidget(self._make_label("Папки"))
         
@@ -97,11 +123,36 @@ class SettingsFrame(BaseFrame):
         row_reports.addWidget(btn_browse)
         
         card_folders.layout().addLayout(row_reports)
-        
-        # Загружаем сохраненный путь
         reports_path = self._settings.value("reports_folder", "")
         if reports_path and os.path.isdir(reports_path):
             self.lbl_reports_path.setText(reports_path)
+        
+        # Пароль терминала
+        card_folders.layout().addSpacing(10)
+        card_folders.layout().addWidget(self._make_label("Пароль терминала (mstsc)"))
+        row_pass = QHBoxLayout()
+        row_pass.setSpacing(10)
+        
+        self.input_password = QLineEdit()
+        self.input_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.input_password.setPlaceholderText("Введите новый пароль (оставьте пустым, чтобы не менять)")
+        self.input_password.setStyleSheet(f"""
+            QLineEdit {{
+                background-color: {self.COLORS.get('card', '#222222')};
+                color: {self.COLORS.get('text', '#E0E0E0')};
+                border: 1px solid {self.COLORS.get('border', '#333333')};
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {self.COLORS.get('button', '#D42626')};
+            }}
+        """)
+        self.input_password.setFixedWidth(300)
+        row_pass.addWidget(self.input_password)
+        row_pass.addStretch()
+        card_folders.layout().addLayout(row_pass)
         
         root_layout.addWidget(card_folders)
 
@@ -110,8 +161,7 @@ class SettingsFrame(BaseFrame):
         card_diag.layout().addWidget(self._make_label("Диагностика"))
         
         hint_diag = QLabel(
-            "Проверка подключений к Outlook, папкам и почте. "
-            "Отправка лога помогает разработчику понять причину ошибки.",
+            "Проверка подключений к Outlook, папкам и почте.",
             card_diag
         )
         hint_diag.setFont(self.FONTS['small'])
@@ -127,7 +177,7 @@ class SettingsFrame(BaseFrame):
         btn_test.setMinimumHeight(40)
         btn_row_diag.addWidget(btn_test)
         
-        btn_send_log = SecondaryButton("Отправить лог", on_click=self._send_log_manual, parent=card_diag)
+        btn_send_log = SecondaryButton("Отправить лог", on_click=self._send_log, parent=card_diag)
         btn_send_log.setFixedWidth(200)
         btn_send_log.setMinimumHeight(40)
         btn_row_diag.addWidget(btn_send_log)
@@ -135,28 +185,7 @@ class SettingsFrame(BaseFrame):
         btn_row_diag.addStretch()
         card_diag.layout().addLayout(btn_row_diag)
         
-        # Чекбокс автоотправки
-        self.chk_auto_log = QCheckBox("Автоотправка лога раз в неделю")
-        self.chk_auto_log.setFont(self.FONTS['small'])
-        self.chk_auto_log.setStyleSheet(f"color: {self.COLORS.get('text', '#E0E0E0')};")
-        
-        # Загружаем настройку (по умолчанию включено)
-        auto_val = self._settings.value("auto_log_enabled", "true")
-        self.chk_auto_log.setChecked(auto_val == "true")
-        self.chk_auto_log.stateChanged.connect(self._save_auto_log_setting)
-        
-        card_diag.layout().addWidget(self.chk_auto_log)
-        
         root_layout.addWidget(card_diag)
-
-        # --- Карточка 4: Другие настройки ---
-        card_other = create_card(self)
-        card_other.layout().addWidget(self._make_label("Другие настройки"))
-        other_hint = QLabel("Здесь появятся настройки принтеров и т.д.", card_other)
-        other_hint.setFont(self.FONTS['small'])
-        other_hint.setStyleSheet(f"color: {self.COLORS.get('text_dim', '#A0A0A0')};")
-        card_other.layout().addWidget(other_hint)
-        root_layout.addWidget(card_other)
 
         # --- Кнопка "Сохранить" (общая) ---
         btn_save = PrimaryButton(
@@ -187,15 +216,9 @@ class SettingsFrame(BaseFrame):
             self._settings.setValue("reports_folder", folder)
             log.info(f"Папка для отчетов изменена: {folder}")
 
-    def _save_auto_log_setting(self, state):
-        val = "true" if state == 2 else "false" # 2 = Checked в PyQt6
-        self._settings.setValue("auto_log_enabled", val)
-
     def _run_test(self):
-        """Запускает комплексную проверку и показывает диалог."""
         results = []
         
-        # 1. Проверка Outlook
         outlook_app = None
         try:
             import win32com.client
@@ -204,21 +227,16 @@ class SettingsFrame(BaseFrame):
         except Exception as e:
             results.append({"title": "Outlook", "status": "error", "message": f"Ошибка: {str(e)[:50]}"})
 
-        # 2. Проверка папки отчетов
         reports_path = self._settings.value("reports_folder", "")
         if reports_path and os.path.isdir(reports_path):
             results.append({"title": "Папка отчётов", "status": "success", "message": reports_path})
         else:
             results.append({"title": "Папка отчётов", "status": "error", "message": "Путь не задан или папка не существует"})
 
-        # 3. Проверка доступных путей (из конфига)
         try:
             from config import get_config
             folders = get_config().init_folders()
-            missing = []
-            for key, path in folders.items():
-                if not os.path.isdir(path):
-                    missing.append(key)
+            missing = [key for key, path in folders.items() if not os.path.isdir(path)]
             if missing:
                 results.append({"title": "Системные папки", "status": "error", "message": f"Не найдены: {', '.join(missing)}"})
             else:
@@ -226,72 +244,45 @@ class SettingsFrame(BaseFrame):
         except Exception as e:
             results.append({"title": "Системные папки", "status": "info", "message": f"Ошибка проверки: {e}"})
 
-        # 4. Проверка корпоративной почты (через Outlook)
         if outlook_app is not None:
             try:
                 namespace = outlook_app.GetNamespace("MAPI")
                 inbox = namespace.GetDefaultFolder(6)
                 item_count = inbox.Items.Count
-                results.append({
-                    "title": "Корпоративная почта", 
-                    "status": "success", 
-                    "message": f"Доступ к ящику есть (писем: {item_count})"
-                })
+                results.append({"title": "Корпоративная почта", "status": "success", "message": f"Доступ к ящику есть (писем: {item_count})"})
             except Exception as e:
-                results.append({
-                    "title": "Корпоративная почта", 
-                    "status": "error", 
-                    "message": f"Нет доступа к ящику: {str(e)[:50]}"
-                })
+                results.append({"title": "Корпоративная почта", "status": "error", "message": f"Нет доступа к ящику: {str(e)[:50]}"})
         else:
             results.append({"title": "Корпоративная почта", "status": "info", "message": "Пропущено (Outlook не запущен)"})
 
         dialog = TestDialog(self, self.COLORS, self.FONTS, results)
         dialog.exec()
 
-    def _send_log_manual(self):
-        """Ручная отправка лога."""
-        from core.log_sender import send_log_to_dev
-        res = send_log_to_dev("Ручная отправка из настроек")
-        if res.get("success"):
-            self.show_success("Лог", f"Лог успешно отправлен!\nФайл: {os.path.basename(res['file'])}")
-            # Обновляем дату последней отправки
-            self._settings.setValue("last_log_sent", datetime.now().isoformat())
-        else:
-            self.show_error("Ошибка отправки", res.get("error", "Неизвестная ошибка"))
-
-    def _check_auto_log(self):
-        """Проверяет, нужно ли отправить лог автоматически."""
-        auto_enabled = self._settings.value("auto_log_enabled", "true") == "true"
-        if not auto_enabled:
-            return
-            
-        last_sent = self._settings.value("last_log_sent", "")
-        
-        from core.log_sender import should_auto_send, send_log_to_dev
-        if should_auto_send(last_sent):
-            log.info("settings_frame: запуск автоотправки лога")
-            # Делаем это с задержкой, чтобы не вешать UI при старте
-            QTimer.singleShot(5000, self._do_auto_send)
-
-    def _do_auto_send(self):
-        from core.log_sender import send_log_to_dev
-        res = send_log_to_dev("Автоматическая отправка (раз в неделю)")
-        if res.get("success"):
-            log.info("settings_frame: автоотправка лога успешна")
-            self._settings.setValue("last_log_sent", datetime.now().isoformat())
-        else:
-            log.warning(f"settings_frame: автоотправка лога не удалась: {res.get('error')}")
+    def _send_log(self):
+        self.show_success("Лог", "Отправка лога будет реализована в ближайшее время.")
 
     def _save_settings(self):
+        # Сохраняем почту
+        email = self.input_email.text().strip()
+        self._settings.setValue("user_email", email)
+
+        # Сохраняем глубину поиска
         text = self.combo_days.currentText()
         if text == "7 дней": val = "7"
         elif text == "14 дней": val = "14"
         elif text == "30 дней": val = "30"
         else: val = "all"
-        
         self._settings.setValue("email_days_back", val)
+
+        # Сохраняем пароль терминала (если введен)
+        new_pass = self.input_password.text()
+        if new_pass:
+            token = xor_encrypt(new_pass, self._password_key)
+            self._settings.setValue("terminal_password", token)
+            self.input_password.clear() # Очищаем поле после сохранения
+
         self.show_success("Настройки", "Настройки сохранены. Изменения вступят в силу при следующем запуске.")
 
     def refresh(self):
-        pass
+        saved_email = self._settings.value("user_email", "")
+        self.input_email.setText(str(saved_email))
