@@ -3,6 +3,7 @@
 Главное окно Core V3.0.
 """
 import os
+import json
 from datetime import datetime, timedelta
 
 from PyQt6.QtCore import (
@@ -18,7 +19,7 @@ from PyQt6.QtWidgets import (
 
 from config import get_config, get_fonts
 from utils.logger import log
-from utils.data_manager import get_data_manager
+from utils.data_manager import get_data_manager, EMAILS_PATH
 from ui.icons import get_icon, get_icon_simple
 from ui.styles import build_qss
 
@@ -81,6 +82,7 @@ class AuditApp(QMainWindow):
 
         self._splash = None
         self._settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
+        self._splash_watch_timer = None
 
         self._status_call.connect(self._on_status_from_bg)
 
@@ -191,6 +193,12 @@ class AuditApp(QMainWindow):
 
         self._update_splash("Загрузка писем из Outlook...", 90)
 
+        # Запускаем таймер на 200 мс (быстрее), чтобы ловить сохранение
+        self._last_emails_count = -1
+        self._splash_watch_timer = QTimer(self)
+        self._splash_watch_timer.timeout.connect(self._check_emails_progress)
+        self._splash_watch_timer.start(200)
+
         import threading
 
         def _worker():
@@ -208,16 +216,40 @@ class AuditApp(QMainWindow):
             except Exception:
                 log.exception("auto_fetch: ошибка сбора писем")
             finally:
-                try:
-                    self._status_call.emit("Готов")
-                    QTimer.singleShot(0, self._on_init_finished)
-                except Exception:
-                    pass
+                # Обязательно ждем завершения, затем проверяем финальный размер
+                QTimer.singleShot(0, self._stop_watch_and_finish)
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_init_finished(self):
+    def _check_emails_progress(self):
+        """Читает emails.json и обновляет заставку."""
+        if not self._splash:
+            return
+        try:
+            if os.path.exists(EMAILS_PATH):
+                with open(EMAILS_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    count = len(data) if isinstance(data, list) else 0
+                    
+                    if count != self._last_emails_count:
+                        self._last_emails_count = count
+                        self._splash.set_counter(count, count)
+                        self._splash.set_status(f"Найдено писем в базе: {count}")
+        except Exception as e:
+            log.debug(f"Ошибка чтения emails.json для заставки: {e}")
+
+    def _stop_watch_and_finish(self):
+        if self._splash_watch_timer:
+            self._splash_watch_timer.stop()
+        
+        # Принудительно обновляем счетчик в последний раз перед закрытием
+        self._check_emails_progress()
+        
+        # Ставим полный прогресс и переходим к завершению
         self._update_splash("Готово", 100)
+        QTimer.singleShot(100, self._on_init_finished)
+
+    def _on_init_finished(self):
         try:
             self.ready.emit()
         except Exception:
@@ -276,12 +308,12 @@ class AuditApp(QMainWindow):
             ("inventory", "Инвентаризация"),
             ("utils", "Утилиты"),
             ("terminal", "Терминал"),
-            ("globe", "АСУС"),           # <-- ИЗМЕНЕНО: "Web" -> "АСУС"
+            ("globe", "АСУС"),
             ("dashboard", "Дашборд"),
             ("ai", "AI"),
             ("archive", "Архив"),
             ("timesheet", "Табель"),
-            ("settings", "Настройки"),   # <-- ДОБАВЛЕНО: Кнопка Настроек
+            ("settings", "Настройки"),
             ("info", "Информация"),
         ]
 
@@ -332,7 +364,6 @@ class AuditApp(QMainWindow):
         self.status_bar.setObjectName("StatusBar")
         self.status_bar.setFixedHeight(36)
 
-        # === НОВЫЕ КНОПКИ (КАЛЬКУЛЯТОР И БЛОКНОТ) ===
         self.btn_calc = QPushButton(self.status_bar)
         self.btn_calc.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_calc.setFixedSize(24, 24)
@@ -360,7 +391,6 @@ class AuditApp(QMainWindow):
             QPushButton:hover { background-color: #333333; border-radius: 4px; }
         """)
         self.btn_notepad.clicked.connect(self._open_notepad)
-        # ==================================================
 
         self.status_label = QLabel("Готов")
         self.status_label.setObjectName("StatusText")
@@ -404,11 +434,9 @@ class AuditApp(QMainWindow):
         self.setCentralWidget(container)
 
         self.show_tab("home")
-
         QTimer.singleShot(500, self._fix_web_size)
 
     def _fix_web_size(self):
-        """Принудительно чинит размер WebView2 после инициализации окна."""
         web_frame = self.frames.get("web")
         if web_frame and hasattr(web_frame, "refresh_size"):
             web_frame.refresh_size()
@@ -602,7 +630,7 @@ class AuditApp(QMainWindow):
             from ui.frames.timesheet_frame import TimesheetFrame
             return TimesheetFrame(self, name)
 
-        if name == "settings":        # <-- ДОБАВЛЕНО: Обработчик
+        if name == "settings":
             from ui.frames.settings_frame import SettingsFrame
             return SettingsFrame(self, name)
 

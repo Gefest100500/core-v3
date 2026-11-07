@@ -1,8 +1,6 @@
 # main.py
 """
 Core V3.0 — Корпоративный аудит.
-Точка входа. Запускает QApplication, показывает заставку,
-создаёт AuditApp и переключается на него, когда всё готово.
 """
 import sys
 import ctypes
@@ -24,9 +22,6 @@ from ui.splash import SplashScreen
 from ui.components.wizard_dialog import WizardDialog
 from utils.logger import log
 
-# =========================================================
-# ТЁМНЫЙ TITLE BAR (Windows API)
-# =========================================================
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19
 
@@ -34,13 +29,9 @@ def apply_dark_title_bar(widget):
     try:
         hwnd = int(widget.winId())
         value = ctypes.c_int(1)
-        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value)
-        )
+        result = ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value))
         if result != 0:
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ctypes.byref(value), ctypes.sizeof(value)
-            )
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_OLD, ctypes.byref(value), ctypes.sizeof(value))
     except Exception:
         pass
 
@@ -48,15 +39,9 @@ class DarkTitleBarFilter(QObject):
     def __init__(self, widget, parent=None):
         super().__init__(parent)
         self._widget = widget
-
     def eventFilter(self, obj, event):
         et = event.type()
-        if et in (
-            QEvent.Type.Show,
-            QEvent.Type.ShowToParent,
-            QEvent.Type.WindowStateChange,
-            QEvent.Type.WindowActivate,
-        ):
+        if et in (QEvent.Type.Show, QEvent.Type.ShowToParent, QEvent.Type.WindowStateChange, QEvent.Type.WindowActivate):
             apply_dark_title_bar(self._widget)
         return super().eventFilter(obj, event)
 
@@ -71,17 +56,10 @@ def install_dark_title_bar(widget):
     widget._dark_title_timer = timer
     return flt
 
-# =========================================================
-# ГЛАВНАЯ ФУНКЦИЯ
-# =========================================================
 def _show_startup_error(app, title, message, tb_text):
     from utils.logger import log, LOG_FILE
     log.error(f"{title}: {message}\n{tb_text}")
-    error_text = (
-        f"{message}\n\n"
-        f"Подробности записаны в лог:\n{LOG_FILE}\n\n"
-        f"Если проблема повторяется — пришлите этот файл разработчику."
-    )
+    error_text = f"{message}\n\nПодробности записаны в лог:\n{LOG_FILE}\n\nЕсли проблема повторяется — пришлите этот файл разработчику."
     if app is None:
         print(f"КРИТИЧЕСКАЯ ОШИБКА: {title}", file=sys.stderr)
         print(error_text, file=sys.stderr)
@@ -100,8 +78,6 @@ def _show_startup_error(app, title, message, tb_text):
 
 def main():
     app = None
-
-    # --- Шаг 1: создаём QApplication ---
     try:
         app = QApplication(sys.argv)
         app.setApplicationName("Core V3.0")
@@ -110,7 +86,6 @@ def main():
         _show_startup_error(None, "Ошибка запуска", f"Не удалось создать QApplication:\n{e}", traceback.format_exc())
         sys.exit(1)
 
-    # --- Шаг 2: создаём AuditApp (но не показываем) ---
     window = None
     try:
         cfg = get_config()
@@ -119,18 +94,15 @@ def main():
         _show_startup_error(app, "Ошибка запуска", f"Не удалось создать главное окно:\n{e}", traceback.format_exc())
         sys.exit(1)
 
-    # --- Шаг 3: ПРОВЕРКА МАСТЕРА ---
     completed = window._settings.value("wizard_completed", "false")
     if completed != "true":
-        # Передаем window как родителя. Он скрыт, но Qt создаст контекст для модального окна.
         wizard = WizardDialog(window, window.COLORS, window.FONTS)
         if wizard.exec() == QDialog.DialogCode.Accepted:
             window._settings.remove("emails_last_sync")
             log.info("Мастер первого запуска успешно пройден.")
         else:
-            sys.exit(0) # Если закрыли крестиком — выходим
+            sys.exit(0)
 
-    # --- Шаг 4: создаём и показываем заставку ---
     splash = None
     try:
         cfg = get_config()
@@ -142,13 +114,11 @@ def main():
         log.warning(f"Не удалось показать заставку: {e}")
         splash = None
 
-    # --- Шаг 5: запускаем фоновую инициализацию ---
     try:
         window.start_background_init(splash)
     except Exception as e:
         log.warning(f"Ошибка фоновой инициализации: {e}")
 
-    # --- Шаг 6: когда ready — скрываем заставку, показываем окно ---
     def _on_ready():
         try:
             if splash is not None:
@@ -160,7 +130,7 @@ def main():
             window.setGraphicsEffect(opacity_effect)
             opacity_effect.setOpacity(0.0)
 
-            window.show()
+            window.showMaximized()
             install_dark_title_bar(window)
 
             fade_in = QPropertyAnimation(opacity_effect, b"opacity")
@@ -179,7 +149,6 @@ def main():
 
     window.ready.connect(_on_ready)
 
-    # --- Шаг 7: цикл событий ---
     try:
         sys.exit(app.exec())
     except Exception as e:

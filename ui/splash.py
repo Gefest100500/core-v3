@@ -6,6 +6,7 @@
 - Полноэкранная.
 - Серая цветовая гамма (не красная).
 - Плавное исчезновение (fade-out) при закрытии.
+- Показывает счетчик найденных/обработанных писем.
 """
 from PyQt6.QtCore import Qt, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QFont
@@ -48,7 +49,6 @@ class SplashScreen(QWidget):
         text_dim = self._colors.get("text_dim", "#A0A0A0")
 
         # СЕРЫЙ цвет вместо красного
-        accent = "#666666"
         accent_light = "#888888"
 
         self.setStyleSheet(f"""
@@ -105,6 +105,14 @@ class SplashScreen(QWidget):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.status_label)
 
+        # Счетчик писем (скрыт по умолчанию)
+        self.counter_label = QLabel("", frame)
+        self.counter_label.setFont(QFont("Segoe UI", 11))
+        self.counter_label.setStyleSheet(f"color: {text_dim};")
+        self.counter_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.counter_label.hide()
+        layout.addWidget(self.counter_label)
+
         # Прогресс-бар (тонкий, по центру)
         progress_container = QVBoxLayout()
         progress_container.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -136,6 +144,11 @@ class SplashScreen(QWidget):
 
     def set_progress(self, value: int):
         self.progress.setValue(max(0, min(100, value)))
+
+    def set_counter(self, found: int, processed: int):
+        """Обновляет счетчик писем на заставке."""
+        self.counter_label.setText(f"Найдено писем: {found} | Обработано: {processed}")
+        self.counter_label.show()
 
     def fade_out_and_close(self, on_finished=None):
         """Плавно скрывает заставку и закрывает её.

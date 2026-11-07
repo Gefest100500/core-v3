@@ -3,10 +3,11 @@
 Вкладка настроек.
 """
 import os
+from datetime import datetime
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QFrame, QComboBox, QWidget,
-    QFileDialog, QPushButton, QLineEdit
+    QFileDialog, QPushButton, QLineEdit, QCheckBox
 )
 
 from ui.frames.base_frame import BaseFrame
@@ -17,6 +18,7 @@ from ui.icons import get_icon_simple
 from ui.components.test_dialog import TestDialog
 from utils.logger import log
 from core.terminal_helper import xor_encrypt, xor_decrypt, get_password_key
+from core.log_sender import send_log_to_dev, should_auto_send
 
 
 class SettingsFrame(BaseFrame):
@@ -27,6 +29,9 @@ class SettingsFrame(BaseFrame):
         self._settings = QSettings("SilchenkoAleksey", "CoreV3")
         self._password_key = get_password_key()
         self._setup_ui()
+        
+        # Проверка автоотправки лога при старте
+        self._check_auto_log()
 
     def _setup_ui(self):
         root_layout = QVBoxLayout(self)
@@ -185,6 +190,17 @@ class SettingsFrame(BaseFrame):
         btn_row_diag.addStretch()
         card_diag.layout().addLayout(btn_row_diag)
         
+        # Чекбокс автоотправки
+        self.chk_auto_log = QCheckBox("Автоотправка лога раз в неделю")
+        self.chk_auto_log.setFont(self.FONTS['small'])
+        self.chk_auto_log.setStyleSheet(f"color: {self.COLORS.get('text', '#E0E0E0')};")
+        
+        auto_val = self._settings.value("auto_log_enabled", "true")
+        self.chk_auto_log.setChecked(auto_val == "true")
+        self.chk_auto_log.stateChanged.connect(self._save_auto_log_setting)
+        
+        card_diag.layout().addWidget(self.chk_auto_log)
+        
         root_layout.addWidget(card_diag)
 
         # --- Кнопка "Сохранить" (общая) ---
@@ -259,14 +275,42 @@ class SettingsFrame(BaseFrame):
         dialog.exec()
 
     def _send_log(self):
-        self.show_success("Лог", "Отправка лога будет реализована в ближайшее время.")
+        """Ручная отправка лога."""
+        res = send_log_to_dev("Ручная отправка из настроек")
+        if res.get("success"):
+            self.show_success("Лог", f"Лог успешно отправлен!\nФайл: {os.path.basename(res['file'])}")
+            self._settings.setValue("last_log_sent", datetime.now().isoformat())
+        else:
+            self.show_error("Ошибка отправки", res.get("error", "Неизвестная ошибка"))
+
+    def _check_auto_log(self):
+        auto_enabled = self._settings.value("auto_log_enabled", "true") == "true"
+        if not auto_enabled:
+            return
+            
+        last_sent = self._settings.value("last_log_sent", "")
+        if should_auto_send(last_sent):
+            log.info("settings_frame: запуск автоотправки лога")
+            # Даем программе загрузиться и отправляем в фоне через 5 секунд
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(5000, self._do_auto_send)
+
+    def _do_auto_send(self):
+        res = send_log_to_dev("Автоматическая отправка (раз в неделю)")
+        if res.get("success"):
+            log.info("settings_frame: автоотправка лога успешна")
+            self._settings.setValue("last_log_sent", datetime.now().isoformat())
+        else:
+            log.warning(f"settings_frame: автоотправка лога не удалась: {res.get('error')}")
+
+    def _save_auto_log_setting(self, state):
+        val = "true" if state == 2 else "false"
+        self._settings.setValue("auto_log_enabled", val)
 
     def _save_settings(self):
-        # Сохраняем почту
         email = self.input_email.text().strip()
         self._settings.setValue("user_email", email)
 
-        # Сохраняем глубину поиска
         text = self.combo_days.currentText()
         if text == "7 дней": val = "7"
         elif text == "14 дней": val = "14"
@@ -274,12 +318,11 @@ class SettingsFrame(BaseFrame):
         else: val = "all"
         self._settings.setValue("email_days_back", val)
 
-        # Сохраняем пароль терминала (если введен)
         new_pass = self.input_password.text()
         if new_pass:
             token = xor_encrypt(new_pass, self._password_key)
             self._settings.setValue("terminal_password", token)
-            self.input_password.clear() # Очищаем поле после сохранения
+            self.input_password.clear()
 
         self.show_success("Настройки", "Настройки сохранены. Изменения вступят в силу при следующем запуске.")
 
